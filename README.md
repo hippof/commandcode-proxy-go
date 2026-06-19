@@ -9,9 +9,10 @@ translates every call to Command Code's `/alpha/generate` endpoint — so any
 OpenAI- or Anthropic-compatible client (the `openai`/`anthropic` SDKs, Claude
 Code, Hermes Agent, `curl`) can drive a Command Code subscription unchanged.
 
-This is a Go port of the Python
-[`commandcode-proxy`](https://github.com/liwei/commandcode-proxy), built for
-**one-file deployment**: a static binary you copy and run, no runtime to install.
+This is a Go port of — and the actively-maintained successor to — the Python
+[`commandcode-proxy`](https://github.com/liwei/commandcode-proxy) (now
+deprecated), built for **one-file deployment**: a static binary you copy and run,
+no runtime to install.
 
 > Unofficial and community-maintained. Not affiliated with Command Code. It
 > forwards requests to the public Command Code API using **your own** key.
