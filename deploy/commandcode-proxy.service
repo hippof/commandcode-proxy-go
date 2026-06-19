@@ -1,0 +1,20 @@
+[Unit]
+Description=Command Code to OpenAI/Anthropic API proxy
+Documentation=https://github.com/liwei/commandcode-proxy-go
+
+[Service]
+Type=simple
+# Runs the commandcode-proxy static binary. Copy it onto the host (e.g. to
+# ~/.local/bin) and point ExecStart at it. To use a different path without
+# editing this file, override with a drop-in:
+#   systemctl --user edit commandcode-proxy.service
+ExecStart=%h/.local/bin/commandcode-proxy
+Environment=COMMANDCODE_PROXY_HOST=127.0.0.1
+Environment=COMMANDCODE_PROXY_PORT=8787
+# The proxy holds no Command Code key — every request must carry the caller's key
+# in `Authorization: Bearer <key>` (or `x-api-key`), relayed to Command Code as-is.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
