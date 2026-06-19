@@ -1,0 +1,5 @@
+# Build output
+/commandcode-proxy
+/dist/
+*.test
+*.out
