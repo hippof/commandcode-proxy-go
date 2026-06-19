@@ -1,5 +1,7 @@
 # commandcode-proxy (Go)
 
+[![CI](https://github.com/liwei/commandcode-proxy-go/actions/workflows/ci.yml/badge.svg)](https://github.com/liwei/commandcode-proxy-go/actions/workflows/ci.yml)
+
 A single-binary, dependency-free proxy for the [Command Code](https://commandcode.ai)
 API. It exposes an OpenAI **Chat Completions** surface (`/v1/chat/completions`,
 `/v1/models`) **and** an Anthropic **Messages** surface (`/v1/messages`), and
