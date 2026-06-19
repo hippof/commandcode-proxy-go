@@ -50,6 +50,9 @@ Or straight from source:
 go run ./cmd/commandcode-proxy
 ```
 
+For Docker, a systemd unit, client/SDK setup, and the full options reference, see
+**[docs/INSTALL.md](docs/INSTALL.md)**.
+
 Bind elsewhere with `COMMANDCODE_PROXY_HOST` / `COMMANDCODE_PROXY_PORT`
 (e.g. `COMMANDCODE_PROXY_HOST=0.0.0.0` to reach it from the LAN).
 
@@ -73,6 +76,7 @@ All optional, via environment variables:
 | Variable | Default | Purpose |
 |---|---|---|
 | `COMMANDCODE_PROXY_HOST` / `_PORT` | `127.0.0.1` / `8787` | Listen address |
+| `COMMANDCODE_PROXY_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`; `debug` logs each request |
 | `COMMANDCODE_MODEL_ALIASES` | – | JSON map of model-id overrides |
 | `COMMANDCODE_API_BASE` | `https://api.commandcode.ai` | Upstream base URL |
 | `COMMANDCODE_MAX_RETRIES` | `2` | Retries for transient upstream 5xx/429 before any content |
@@ -124,7 +128,8 @@ make test        # unit + route tests (fake Command Code backend, no network)
 | `internal/upstream` | `/alpha/generate` streaming, retry, error classification |
 | `internal/server` | Routes, response assembly, error mapping, `/admin` dashboard |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design rationale
+See [docs/INSTALL.md](docs/INSTALL.md) for install/deploy/client setup,
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design rationale
 (decisions **D1–D16**), [docs/ROADMAP.md](docs/ROADMAP.md) for deferred work, and
 [AGENTS.md](AGENTS.md) for contributor/agent guidance.
 
