@@ -1,0 +1,8 @@
+services:
+  commandcode-proxy:
+    build: .
+    image: commandcode-proxy
+    # Keyless: callers pass their own Command Code key. Published to loopback only.
+    ports:
+      - "127.0.0.1:8787:8787"
+    restart: unless-stopped
