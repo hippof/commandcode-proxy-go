@@ -30,8 +30,10 @@ text-only; image/multimodal parts are flattened to text (see `docs/ROADMAP.md`).
   only before the first content token.
 - **`/admin` dashboard** — status page with uptime and a live request log
   (metadata only — never keys or content; last 200 requests, in-memory).
-- **`COMMANDCODE_PROXY_LOG_LEVEL`** (`debug`/`info`/`warn`/`error`; `debug` logs
-  each request); the proxy version is surfaced at `GET /health`.
+- **`COMMANDCODE_PROXY_LOG_LEVEL`** (`debug`/`info`/`warn`/`error`); each request
+  is logged at `info` (the default) and above — an access log of method, path,
+  status, latency, and model — with `warn`/`error` quieting it. The proxy version
+  is surfaced at `GET /health`.
 - **Single-binary distribution** — `make build` (static, CGO disabled),
   `make release` (cross-compiles linux/darwin × amd64/arm64), a `Dockerfile` +
   `compose.yaml`, and a systemd user unit in `deploy/`.

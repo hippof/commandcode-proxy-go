@@ -76,7 +76,7 @@ All optional, via environment variables:
 | Variable | Default | Purpose |
 |---|---|---|
 | `COMMANDCODE_PROXY_HOST` / `_PORT` | `127.0.0.1` / `8787` | Listen address |
-| `COMMANDCODE_PROXY_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`; `debug` logs each request |
+| `COMMANDCODE_PROXY_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`; each request is logged at `info`+, `warn`/`error` quiet it |
 | `COMMANDCODE_MODEL_ALIASES` | – | JSON map of model-id overrides |
 | `COMMANDCODE_API_BASE` | `https://api.commandcode.ai` | Upstream base URL |
 | `COMMANDCODE_MAX_RETRIES` | `2` | Retries for transient upstream 5xx/429 before any content |

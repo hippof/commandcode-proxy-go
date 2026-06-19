@@ -105,8 +105,12 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 			Status: sw.status,
 			MS:     ms,
 		})
-		if s.cfg.LogEnabled("debug") {
-			log.Printf("%s %s %d %dms", r.Method, path, sw.status, ms)
+		if s.cfg.LogEnabled("info") {
+			if mc.set {
+				log.Printf("%s %s %d %dms model=%s", r.Method, path, sw.status, ms, mc.model)
+			} else {
+				log.Printf("%s %s %d %dms", r.Method, path, sw.status, ms)
+			}
 		}
 	})
 }

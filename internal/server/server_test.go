@@ -34,6 +34,7 @@ func testServer(genURL string, aliases map[string]string) *Server {
 		MaxTokensCap:       64000,
 		MaxRetries:         2,
 		ModelAliases:       aliases,
+		LogLevel:           "warn", // keep route-test output quiet
 	})
 }
 
