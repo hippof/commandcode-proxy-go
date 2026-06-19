@@ -26,6 +26,7 @@ import (
 type Server struct {
 	cfg    *config.Config
 	client *http.Client
+	log    *requestLog
 }
 
 // New builds a Server with a streaming-friendly HTTP client (bounded connect and
@@ -41,6 +42,7 @@ func New(cfg *config.Config) *Server {
 				ForceAttemptHTTP2:     true,
 			},
 		},
+		log: newRequestLog(),
 	}
 }
 
@@ -51,7 +53,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.listModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
 	mux.HandleFunc("POST /v1/messages", s.messages)
-	return mux
+	mux.HandleFunc("GET /admin/data", s.adminData)
+	mux.HandleFunc("GET /admin", s.adminPage)
+	return s.withLogging(mux)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -101,6 +105,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	model = s.cfg.ResolveModel(model)
 	body["model"] = model
+	setModel(r, model)
 
 	stream, _ := body["stream"].(bool)
 	includeUsage := false
@@ -173,6 +178,7 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model = s.cfg.ResolveModel(model)
+	setModel(r, model)
 
 	stream, _ := body["stream"].(bool)
 	mid := "msg_" + randHex(16)

@@ -29,7 +29,7 @@ tool.
 - `POST /v1/messages` — Anthropic Messages-compatible (Claude Code, the
   Anthropic SDK).
 - `GET /v1/models` — proxies Command Code's live model catalog.
-- `GET /health`.
+- `GET /health`, plus a minimal status + request-log dashboard at `GET /admin`.
 
 Keyless by design: every request carries the caller's own Command Code key
 (`Authorization: Bearer <key>` or Anthropic's `x-api-key`), relayed verbatim.
@@ -96,6 +96,16 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 export ANTHROPIC_API_KEY=user_...
 ```
+
+## Dashboard
+
+A minimal status page lives at **`http://127.0.0.1:8787/admin`** — open it in a
+browser for uptime, total requests, and a live table of recent requests (method,
+path, model, status, latency), refreshing every few seconds.
+
+It records request **metadata only** — never your API key or message content —
+in a small in-memory ring (the last 200 requests, cleared on restart). The page
+is unauthenticated and meant for loopback; don't expose it on a public bind.
 
 ## Tests
 
