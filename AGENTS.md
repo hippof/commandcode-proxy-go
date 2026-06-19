@@ -79,8 +79,9 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 ## Conventions
 
-- Go 1.23+, stdlib only. **No new dependencies** — the single-binary,
-  zero-dependency property is a feature, not an accident.
+- Go 1.23+. Prefer the standard library, but adding a third-party dependency is
+  fine when it earns its place (a clear need stdlib serves poorly). Zero
+  dependencies is not a goal — just keep the set small and justified.
 - `gofmt`-clean and `go vet`-clean before every commit (`make test` runs vet).
 - Match the existing style: small focused functions; comments explain *why*, not
   *what*; comment only where non-obvious.
