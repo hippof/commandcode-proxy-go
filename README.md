@@ -122,7 +122,11 @@ make test        # unit + route tests (fake Command Code backend, no network)
 | `internal/auth` | Keyless API-key extraction |
 | `internal/translate` | Pure OpenAI/Anthropic ⇄ Command Code translation |
 | `internal/upstream` | `/alpha/generate` streaming, retry, error classification |
-| `internal/server` | Routes, response assembly, error mapping |
+| `internal/server` | Routes, response assembly, error mapping, `/admin` dashboard |
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design rationale
+(decisions **D1–D16**), [docs/ROADMAP.md](docs/ROADMAP.md) for deferred work, and
+[AGENTS.md](AGENTS.md) for contributor/agent guidance.
 
 ## Credits
 
