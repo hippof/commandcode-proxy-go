@@ -36,6 +36,9 @@ type Config struct {
 
 	// ModelAliases are exact model-id overrides from COMMANDCODE_MODEL_ALIASES.
 	ModelAliases map[string]string
+
+	// LogLevel sets log verbosity: debug, info (default), warn, or error.
+	LogLevel string
 }
 
 // familyDefaults map a Claude model family (matched as a case-insensitive
@@ -61,7 +64,20 @@ func Load() *Config {
 		MaxRetries:         envInt("COMMANDCODE_MAX_RETRIES", 2),
 		RequestTimeout:     time.Duration(envFloat("COMMANDCODE_TIMEOUT", 300) * float64(time.Second)),
 		ModelAliases:       parseAliases(os.Getenv("COMMANDCODE_MODEL_ALIASES")),
+		LogLevel:           strings.ToLower(env("COMMANDCODE_PROXY_LOG_LEVEL", "info")),
 	}
+}
+
+var logLevelRank = map[string]int{"debug": 0, "info": 1, "warn": 2, "error": 3}
+
+// LogEnabled reports whether a message at the given level should be emitted
+// under the configured LogLevel (an unrecognized LogLevel is treated as info).
+func (c *Config) LogEnabled(level string) bool {
+	threshold, ok := logLevelRank[c.LogLevel]
+	if !ok {
+		threshold = logLevelRank["info"]
+	}
+	return logLevelRank[level] >= threshold
 }
 
 // ResolveModel maps a client-supplied model id to a Command Code id.

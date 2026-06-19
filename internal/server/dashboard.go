@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -95,14 +96,18 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 		if mc.set {
 			model = mc.model
 		}
+		ms := time.Since(start).Milliseconds()
 		s.log.add(logEntry{
 			TS:     float64(time.Now().UnixNano()) / 1e9,
 			Method: r.Method,
 			Path:   path,
 			Model:  model,
 			Status: sw.status,
-			MS:     time.Since(start).Milliseconds(),
+			MS:     ms,
 		})
+		if s.cfg.LogEnabled("debug") {
+			log.Printf("%s %s %d %dms", r.Method, path, sw.status, ms)
+		}
 	})
 }
 

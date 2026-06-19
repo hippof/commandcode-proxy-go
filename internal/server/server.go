@@ -24,16 +24,18 @@ import (
 
 // Server holds the resolved config and a shared HTTP client.
 type Server struct {
-	cfg    *config.Config
-	client *http.Client
-	log    *requestLog
+	cfg     *config.Config
+	client  *http.Client
+	log     *requestLog
+	Version string // proxy version, surfaced at /health; set by main
 }
 
 // New builds a Server with a streaming-friendly HTTP client (bounded connect and
 // response-header waits, but no total timeout so long streams aren't cut).
 func New(cfg *config.Config) *Server {
 	return &Server{
-		cfg: cfg,
+		cfg:     cfg,
+		Version: "dev",
 		client: &http.Client{
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
@@ -59,7 +61,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": s.Version})
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {

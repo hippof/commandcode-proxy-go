@@ -17,9 +17,12 @@ var version = "dev"
 func main() {
 	cfg := config.Load()
 	srv := server.New(cfg)
+	srv.Version = version
 
 	addr := env("COMMANDCODE_PROXY_HOST", "127.0.0.1") + ":" + env("COMMANDCODE_PROXY_PORT", "8787")
-	log.Printf("commandcode-proxy %s listening on http://%s", version, addr)
+	if cfg.LogEnabled("info") {
+		log.Printf("commandcode-proxy %s listening on http://%s", version, addr)
+	}
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
 		log.Fatal(err)
 	}

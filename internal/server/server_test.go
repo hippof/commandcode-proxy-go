@@ -61,8 +61,12 @@ const authHdr = "Authorization"
 func TestHealth(t *testing.T) {
 	srv := testServer("http://unused", nil)
 	rec := do(srv, "GET", "/health", "", nil)
-	if rec.Code != 200 || decode(t, rec)["status"] != "ok" {
+	body := decode(t, rec)
+	if rec.Code != 200 || body["status"] != "ok" {
 		t.Fatalf("health: %d %s", rec.Code, rec.Body)
+	}
+	if body["version"] != "dev" {
+		t.Fatalf("version=%v", body["version"])
 	}
 }
 
