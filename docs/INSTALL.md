@@ -117,6 +117,29 @@ systemctl --user edit commandcode-proxy.service
 #   ExecStart=/abs/path/to/commandcode-proxy
 ```
 
+**Configuration via an env file.** To set options (model aliases, port, log
+level, …) from a file instead of inline `Environment=` lines, point the unit at an
+`EnvironmentFile` with a drop-in:
+
+```sh
+cat > ~/.config/commandcode-proxy.env <<'EOF'
+COMMANDCODE_MODEL_ALIASES='{"opus":"zai-org/GLM-5.2"}'
+COMMANDCODE_PROXY_PORT=8787
+EOF
+
+systemctl --user edit commandcode-proxy.service
+#   [Service]
+#   EnvironmentFile=%h/.config/commandcode-proxy.env
+
+systemctl --user restart commandcode-proxy.service
+```
+
+Wrap a JSON value (like `COMMANDCODE_MODEL_ALIASES`) in **single quotes** so
+systemd uses it verbatim — otherwise the embedded `"` can be stripped and the JSON
+won't parse. Confirm it applied via `journalctl --user -u commandcode-proxy.service
+-f`: an opus request should then log `… model=zai-org/GLM-5.2`. (`.env.example` is
+a ready-made template — copy it and uncomment what you need.)
+
 The service holds no Command Code key — each caller supplies its own in the
 `Authorization` header, so one instance can serve different accounts.
 
