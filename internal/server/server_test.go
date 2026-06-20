@@ -234,15 +234,31 @@ func TestAnthropicNonStreamingSuccess(t *testing.T) {
 }
 
 func TestAnthropicModelAlias(t *testing.T) {
-	cc := httptest.NewServer(ccStream(200,
-		`{"type":"text-delta","text":"hi"}`, `{"type":"finish","finishReason":"stop"}`))
+	var upstreamModel string
+	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		data, _ := io.ReadAll(r.Body)
+		json.Unmarshal(data, &body)
+		if params, ok := body["params"].(map[string]any); ok {
+			upstreamModel, _ = params["model"].(string)
+		}
+		w.WriteHeader(200)
+		io.WriteString(w, `{"type":"text-delta","text":"hi"}`+"\n")
+		io.WriteString(w, `{"type":"finish","finishReason":"stop"}`+"\n")
+	}))
 	defer cc.Close()
 	srv := testServer(cc.URL, map[string]string{"claude-opus-4-8": "deepseek/deepseek-v4-pro"})
 	rec := do(srv, "POST", "/v1/messages",
 		`{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
 		map[string]string{"x-api-key": "user_x"})
-	if decode(t, rec)["model"] != "deepseek/deepseek-v4-pro" {
-		t.Fatalf("model=%v", decode(t, rec)["model"])
+	// the alias is applied to the UPSTREAM request
+	if upstreamModel != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("upstream model=%q, want deepseek/deepseek-v4-pro", upstreamModel)
+	}
+	// but the response echoes the REQUESTED model, so Claude Code can restore the
+	// session (it would reject an unrecognized upstream id like deepseek/...)
+	if decode(t, rec)["model"] != "claude-opus-4-8" {
+		t.Fatalf("response model=%v, want claude-opus-4-8", decode(t, rec)["model"])
 	}
 }
 

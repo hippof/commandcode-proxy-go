@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Anthropic `/v1/messages` echoes the requested model** in the response `model`
+  field (and `message_start`), not the resolved upstream id. Claude Code can now
+  restore a session whose model was aliased (e.g. `claude-opus-4-8` →
+  `zai-org/GLM-5.2`); previously it stored the upstream id and reported it could
+  not be restored. The resolved model is still sent upstream and shown in the
+  access log / dashboard.
+
 ## [1.1.0] - 2026-06-20
 
 ### Added

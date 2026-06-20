@@ -170,8 +170,8 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 			"Missing Command Code API key. Send it as 'x-api-key: <key>' or 'Authorization: Bearer <key>'.")
 		return
 	}
-	model, _ := body["model"].(string)
-	if model == "" {
+	requested, _ := body["model"].(string)
+	if requested == "" {
 		writeAnthropicError(w, http.StatusBadRequest, "'model' is required")
 		return
 	}
@@ -179,14 +179,18 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusBadRequest, "'max_tokens' is required")
 		return
 	}
-	model = s.cfg.ResolveModel(model)
-	setModel(r, model)
+	// Forward the resolved model upstream and log it, but echo the *requested*
+	// model in the response so Anthropic clients see a model id they recognize —
+	// e.g. Claude Code restoring a session (it can't restore an upstream id like
+	// "zai-org/GLM-5.2").
+	resolved := s.cfg.ResolveModel(requested)
+	setModel(r, resolved)
 
 	stream, _ := body["stream"].(bool)
 	mid := "msg_" + randHex(16)
 
 	openaiReq := translate.OpenAIRequestFromAnthropic(body)
-	openaiReq["model"] = model
+	openaiReq["model"] = resolved
 	ccBody := translate.BuildCCRequest(openaiReq, s.cfg)
 	src := upstream.NewStream(r.Context(), s.client, s.cfg.GenerateURL, ccBody, s.ccHeaders(key), s.cfg.MaxRetries)
 	defer src.Close()
@@ -200,10 +204,10 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	if first == nil {
 		if stream {
 			s.streamSSE(w, func(emit func(string) error) error {
-				return translate.EmptyMessageStream(mid, model, emit)
+				return translate.EmptyMessageStream(mid, requested, emit)
 			})
 		} else {
-			writeJSON(w, http.StatusOK, translate.EmptyMessage(mid, model))
+			writeJSON(w, http.StatusOK, translate.EmptyMessage(mid, requested))
 		}
 		return
 	}
@@ -216,11 +220,11 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	next := streamNext(src)
 	if stream {
 		s.streamSSE(w, func(emit func(string) error) error {
-			return translate.StreamMessage(first, next, model, mid, emit)
+			return translate.StreamMessage(first, next, requested, mid, emit)
 		})
 		return
 	}
-	message, ccErr := translate.BuildMessage(first, next, model, mid)
+	message, ccErr := translate.BuildMessage(first, next, requested, mid)
 	if ccErr != nil {
 		writeAnthropicError(w, statusFromCCError(ccErr), errMessage(ccErr))
 		return
