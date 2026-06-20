@@ -86,10 +86,11 @@ All optional, via environment variables:
 | `COMMANDCODE_TIMEOUT` | `300` | Upstream response-header timeout (seconds) |
 
 **Model aliases.** A request's `model` is resolved before forwarding: an exact
-`COMMANDCODE_MODEL_ALIASES` entry wins, then a built-in Claude-family default
-(any **opus** id → `deepseek/deepseek-v4-pro`, any **sonnet**/**haiku** id →
-`deepseek/deepseek-v4-flash`), then the id unchanged — so Claude Code works with
-no config.
+full-id key in `COMMANDCODE_MODEL_ALIASES` wins, then a Claude-family match — a key
+of `opus`/`sonnet`/`haiku` overrides that whole family, else the built-in default
+(opus → `deepseek/deepseek-v4-pro`, sonnet/haiku → `deepseek/deepseek-v4-flash`) —
+then the id unchanged. So `{"opus":"zai-org/GLM-5.2"}` remaps every opus id, and
+Claude Code works with no config at all.
 
 ## Connect a client
 

@@ -152,15 +152,20 @@ All settings are environment variables (see [`.env.example`](../.env.example)):
 The proxy rewrites a request's `model` to a Command Code id before forwarding, on
 **both** `/v1/chat/completions` and `/v1/messages`. Resolution order:
 
-1. **Exact override** — `COMMANDCODE_MODEL_ALIASES`, a JSON object mapping an id
-   (or short name) to a Command Code id:
+1. **Exact id** — a full model-id key in `COMMANDCODE_MODEL_ALIASES` wins:
    ```sh
-   export COMMANDCODE_MODEL_ALIASES='{"sonnet":"anthropic/claude-...","qwen":"Qwen/Qwen3.7-Plus"}'
+   export COMMANDCODE_MODEL_ALIASES='{"claude-opus-4-8":"Qwen/Qwen3.7-Plus"}'
    ```
-2. **Built-in family default** — any **opus** id → `deepseek/deepseek-v4-pro`,
-   any **sonnet** or **haiku** id → `deepseek/deepseek-v4-flash`, so Claude Code's
-   models work with no config. (Matched as a substring, so dated variants like
-   `claude-opus-4-1-20250805` are covered.)
+2. **Family** — if the id contains a known family name (`opus`/`sonnet`/`haiku`),
+   it maps by family: a `COMMANDCODE_MODEL_ALIASES` key equal to that family name
+   overrides the whole family, otherwise the built-in default applies (**opus** →
+   `deepseek/deepseek-v4-pro`, **sonnet**/**haiku** → `deepseek/deepseek-v4-flash`).
+   The match is a case-insensitive substring, so dated variants like
+   `claude-opus-4-1-20250805` are covered. For example, to send every opus id to a
+   different model:
+   ```sh
+   export COMMANDCODE_MODEL_ALIASES='{"opus":"zai-org/GLM-5.2"}'
+   ```
 3. **Pass-through** — anything else is sent unchanged.
 
 `/v1/models` still lists Command Code's full catalog.

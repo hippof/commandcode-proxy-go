@@ -32,6 +32,25 @@ func TestResolveModelAliasOverridesFamily(t *testing.T) {
 	}
 }
 
+func TestResolveModelFamilyOverride(t *testing.T) {
+	c := &Config{ModelAliases: map[string]string{"opus": "zai-org/GLM-5.2"}}
+	// a family-name key remaps every id in that family (substring, dated variants)
+	for _, in := range []string{"claude-opus-4-8", "claude-opus-4-1-20250805", "OPUS-x"} {
+		if got := c.ResolveModel(in); got != "zai-org/GLM-5.2" {
+			t.Errorf("ResolveModel(%q)=%q, want zai-org/GLM-5.2", in, got)
+		}
+	}
+	// other families keep their built-in default
+	if got := c.ResolveModel("claude-sonnet-4-6"); got != "deepseek/deepseek-v4-flash" {
+		t.Errorf("sonnet should keep default, got %q", got)
+	}
+	// an exact full-id alias still beats the family override
+	c.ModelAliases["claude-opus-4-8"] = "exact/win"
+	if got := c.ResolveModel("claude-opus-4-8"); got != "exact/win" {
+		t.Errorf("exact id should beat family override, got %q", got)
+	}
+}
+
 func TestParseAliasesViaEnv(t *testing.T) {
 	t.Setenv("COMMANDCODE_MODEL_ALIASES", `{"sonnet":"anthropic/claude-x","bad":5,"blank":"  "}`)
 	c := Load()

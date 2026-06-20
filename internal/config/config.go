@@ -43,7 +43,8 @@ type Config struct {
 
 // familyDefaults map a Claude model family (matched as a case-insensitive
 // substring) to a Command Code id, so Claude Code's ids work with no config. An
-// exact ModelAliases entry overrides these. Ordered for deterministic matching.
+// exact ModelAliases entry, or a ModelAliases key equal to the family name,
+// overrides these. Ordered for deterministic matching.
 var familyDefaults = []struct{ family, target string }{
 	{"opus", "deepseek/deepseek-v4-pro"},
 	{"sonnet", "deepseek/deepseek-v4-flash"},
@@ -81,8 +82,9 @@ func (c *Config) LogEnabled(level string) bool {
 }
 
 // ResolveModel maps a client-supplied model id to a Command Code id.
-// Precedence: an exact ModelAliases entry, then the built-in family default,
-// then the id unchanged.
+// Precedence: an exact ModelAliases entry, then a family match — where a
+// ModelAliases key equal to the family name (e.g. "opus") overrides the target,
+// otherwise the built-in default applies — then the id unchanged.
 func (c *Config) ResolveModel(name string) string {
 	if v, ok := c.ModelAliases[name]; ok {
 		return v
@@ -90,6 +92,9 @@ func (c *Config) ResolveModel(name string) string {
 	lowered := strings.ToLower(name)
 	for _, fd := range familyDefaults {
 		if strings.Contains(lowered, fd.family) {
+			if override, ok := c.ModelAliases[fd.family]; ok {
+				return override
+			}
 			return fd.target
 		}
 	}
