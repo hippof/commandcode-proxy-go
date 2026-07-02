@@ -88,9 +88,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
-	body, errMsg := readJSONObject(r)
+	body, errStatus, errMsg := readJSONObject(w, r)
 	if errMsg != "" {
-		writeOpenAIError(w, http.StatusBadRequest, errMsg, "invalid_request_error", "")
+		writeOpenAIError(w, errStatus, errMsg, "invalid_request_error", "")
 		return
 	}
 	key := auth.ResolveAPIKey(r.Header.Get("Authorization"), "")
@@ -159,9 +159,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
-	body, errMsg := readJSONObject(r)
+	body, errStatus, errMsg := readJSONObject(w, r)
 	if errMsg != "" {
-		writeAnthropicError(w, http.StatusBadRequest, errMsg)
+		writeAnthropicError(w, errStatus, errMsg)
 		return
 	}
 	key := auth.ResolveAPIKey(r.Header.Get("Authorization"), r.Header.Get("x-api-key"))
@@ -363,23 +363,31 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// readJSONObject reads the request body as a JSON object, returning a non-empty
-// error message string on failure (so the caller can format an API-specific
-// error).
-func readJSONObject(r *http.Request) (map[string]any, string) {
-	data, err := io.ReadAll(r.Body)
+// maxBodyBytes caps a request body. Generous — base64 image parts are the
+// largest legitimate payload — while bounding memory on exposed binds.
+const maxBodyBytes = 32 << 20 // 32 MiB
+
+// readJSONObject reads the request body as a JSON object. On failure it
+// returns an HTTP status and a non-empty error message (so the caller can
+// format an API-specific error).
+func readJSONObject(w http.ResponseWriter, r *http.Request) (map[string]any, int, string) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		return nil, "request body must be valid JSON"
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, http.StatusRequestEntityTooLarge, "request body exceeds the 32 MiB limit"
+		}
+		return nil, http.StatusBadRequest, "request body must be valid JSON"
 	}
 	var v any
 	if json.Unmarshal(data, &v) != nil {
-		return nil, "request body must be valid JSON"
+		return nil, http.StatusBadRequest, "request body must be valid JSON"
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil, "request body must be a JSON object"
+		return nil, http.StatusBadRequest, "request body must be a JSON object"
 	}
-	return m, ""
+	return m, 0, ""
 }
 
 func randHex(n int) string {

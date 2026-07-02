@@ -184,6 +184,16 @@ func TestChatStreamingDone(t *testing.T) {
 	}
 }
 
+func TestChatBodyTooLarge(t *testing.T) {
+	srv := testServer("http://unused", nil)
+	body := `{"model":"m","messages":[{"role":"user","content":"` +
+		strings.Repeat("x", maxBodyBytes) + `"}]}`
+	rec := do(srv, "POST", "/v1/chat/completions", body, map[string]string{authHdr: "Bearer user_x"})
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", rec.Code)
+	}
+}
+
 func TestChatImagePartForwarded(t *testing.T) {
 	var upstreamContent any
 	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

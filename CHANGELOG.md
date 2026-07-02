@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Hardening for exposed binds**: a 10s `ReadHeaderTimeout` (Slowloris guard),
+  a 32 MiB request-body cap (over-limit requests get a proper `413`), and
+  graceful shutdown on SIGINT/SIGTERM (in-flight requests, including SSE
+  streams, get up to 30s to finish). Streaming behavior is unchanged — there is
+  still no read/write timeout on established requests.
+
 ## [1.2.0] - 2026-07-02
 
 ### Added
