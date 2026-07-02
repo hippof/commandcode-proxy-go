@@ -184,6 +184,38 @@ func TestChatStreamingDone(t *testing.T) {
 	}
 }
 
+func TestChatImagePartForwarded(t *testing.T) {
+	var upstreamContent any
+	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		data, _ := io.ReadAll(r.Body)
+		json.Unmarshal(data, &body)
+		msgs := body["params"].(map[string]any)["messages"].([]any)
+		upstreamContent = msgs[0].(map[string]any)["content"]
+		w.WriteHeader(200)
+		io.WriteString(w, `{"type":"text-delta","text":"Red"}`+"\n")
+		io.WriteString(w, `{"type":"finish","finishReason":"stop"}`+"\n")
+	}))
+	defer cc.Close()
+	srv := testServer(cc.URL, nil)
+	rec := do(srv, "POST", "/v1/chat/completions",
+		`{"model":"m","messages":[{"role":"user","content":[
+			{"type":"text","text":"what color?"},
+			{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]}]}`,
+		map[string]string{authHdr: "Bearer user_x"})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	parts, ok := upstreamContent.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("upstream content=%v, want 2 typed parts", upstreamContent)
+	}
+	img := parts[1].(map[string]any)
+	if img["type"] != "image" || img["image"] != "data:image/png;base64,AAA" {
+		t.Fatalf("image part=%v", img)
+	}
+}
+
 // ── Anthropic /v1/messages ───────────────────────────────────────────────────
 
 func TestAnthropicMissingKey(t *testing.T) {

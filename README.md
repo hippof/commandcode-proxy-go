@@ -27,10 +27,12 @@ tool.
 
 ## What it does
 
-- `POST /v1/chat/completions` — streaming and non-streaming, with tool calling
-  and reasoning (`reasoning_content`) passthrough.
+- `POST /v1/chat/completions` — streaming and non-streaming, with tool calling,
+  reasoning (`reasoning_content`) passthrough, and image input (`image_url`
+  parts; data or https URLs).
 - `POST /v1/messages` — Anthropic Messages-compatible (Claude Code, the
-  Anthropic SDK).
+  Anthropic SDK), including `image` blocks. Vision depends on the upstream
+  model (e.g. Qwen 3.7 reads images; the deepseek v4 family ignores them).
 - `GET /v1/models` — proxies Command Code's live model catalog.
 - `GET /health`, plus a minimal status + request-log dashboard at `GET /admin`.
 

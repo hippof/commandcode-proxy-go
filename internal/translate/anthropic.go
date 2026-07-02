@@ -92,7 +92,8 @@ func anthMessageToOpenAI(m map[string]any) []any {
 
 	// user (and any other) role
 	out := []any{}
-	var textParts []string
+	parts := []any{}
+	hasImage := false
 	for _, bi := range list {
 		b := getMap(bi)
 		if b == nil {
@@ -100,7 +101,17 @@ func anthMessageToOpenAI(m map[string]any) []any {
 		}
 		switch getStr(b, "type") {
 		case "text":
-			textParts = append(textParts, getStr(b, "text"))
+			if t := getStr(b, "text"); t != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": t})
+			}
+		case "image":
+			// Command Code accepts Anthropic image blocks verbatim (probe in
+			// docs/ROADMAP.md); keep type+source only so extras like
+			// cache_control don't leak upstream.
+			if src := getMap(b["source"]); src != nil {
+				parts = append(parts, map[string]any{"type": "image", "source": src})
+				hasImage = true
+			}
 		case "tool_result":
 			out = append(out, map[string]any{
 				"role":         "tool",
@@ -108,10 +119,12 @@ func anthMessageToOpenAI(m map[string]any) []any {
 				"content":      toolResultToText(b["content"]),
 			})
 		}
-		// image blocks are flattened away (text-only, like the OpenAI path).
 	}
-	if len(textParts) > 0 {
-		out = append(out, map[string]any{"role": "user", "content": joinNonEmpty(textParts)})
+	switch {
+	case hasImage:
+		out = append(out, map[string]any{"role": "user", "content": parts})
+	case len(parts) > 0: // text-only keeps the flattened-string shape
+		out = append(out, map[string]any{"role": "user", "content": contentToText(parts)})
 	}
 	return out
 }

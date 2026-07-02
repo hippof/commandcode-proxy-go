@@ -225,10 +225,11 @@ run in a shell, a container, or a service manager.
 ### D13. Faithful port — deliberate non-goals
 
 Ported the translation and auth; deliberately **left out**: the browser `/login`
-OAuth flow (each caller passes its own key), a static pricing table (token `usage`
-passes through verbatim), and multimodal/image inputs (image parts are flattened
-to text — the upstream is text-only too; see
-[ROADMAP.md](ROADMAP.md)). The boundary is intentional, not an oversight.
+OAuth flow (each caller passes its own key) and a static pricing table (token
+`usage` passes through verbatim). The boundary is intentional, not an oversight.
+Image inputs were originally left out too, but a live probe (2026-07-02)
+confirmed upstream support, so they are now forwarded — see D14 and
+[ROADMAP.md](ROADMAP.md) for what remains deferred.
 
 ### D14. Anthropic Messages by reusing the OpenAI pipeline
 
@@ -244,10 +245,20 @@ a `content_block_*` state machine).
 requests without) in *two* encoders. Normalizing to the OpenAI shape lands exactly
 where the CC encoder already operates; Anthropic (everything-is-a-block) is the
 structural outlier, so the OpenAI hop is a funnel, not a lossy U-turn. The
-features the hop "drops" (images, input `thinking`, `tool_choice`) aren't caused
-by the hop — CC is text-only with no forced-tool, so a direct path would drop them
-too. **When to revisit.** Multimodal: `translate.contentToText` flattens images,
-so the hop is a hard ceiling for image support.
+features the hop "drops" (input `thinking`, `tool_choice`) aren't caused by the
+hop — CC has no forced-tool, so a direct path would drop them too.
+
+**Images through the hop.** A live probe (2026-07-02) showed `/alpha/generate`
+accepts image parts in a user message's content array — both the AI-SDK shape
+`{"type":"image","image":<data:/https: URL>}` and Anthropic image blocks
+(`{"type":"image","source":{...}}`) verbatim. So the hop is no longer a ceiling:
+OpenAI `image_url` parts map to the single `image` field, the Anthropic path
+re-emits its image blocks unchanged (`type`+`source` only, so `cache_control`
+doesn't leak), and `translate.userContentToCC` forwards both; text-only content
+keeps the historical flattened-string shape. Vision is per model — deepseek v4
+silently ignores images, GLM-5.2 rejects them in-stream, Qwen 3.7 reads them —
+and those upstream behaviors surface to the caller unchanged, like
+`MODEL_NOT_IN_PLAN`.
 
 ### D15. Observability: an in-memory request log + dashboard
 

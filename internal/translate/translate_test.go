@@ -118,6 +118,59 @@ func TestAnthropicToolResultFanOut(t *testing.T) {
 	}
 }
 
+func TestUserContentImageMapping(t *testing.T) {
+	req := map[string]any{
+		"model": "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "what color?"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAA"}},
+		}}},
+	}
+	msgs := params(BuildCCRequest(req, testCfg()))["messages"].([]any)
+	content := msgs[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content=%v", content)
+	}
+	img := content[1].(map[string]any)
+	if img["type"] != "image" || img["image"] != "data:image/png;base64,AAA" {
+		t.Fatalf("image part=%v", img)
+	}
+}
+
+func TestUserContentTextOnlyStaysString(t *testing.T) {
+	req := map[string]any{
+		"model": "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "a"},
+			map[string]any{"type": "text", "text": "b"},
+		}}},
+	}
+	msgs := params(BuildCCRequest(req, testCfg()))["messages"].([]any)
+	if c := msgs[0].(map[string]any)["content"]; c != "a\nb" {
+		t.Fatalf("content=%v, want flattened string", c)
+	}
+}
+
+func TestAnthropicImageBlockPassthrough(t *testing.T) {
+	src := map[string]any{"type": "base64", "media_type": "image/png", "data": "AAA"}
+	body := map[string]any{
+		"model": "m", "max_tokens": float64(16),
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "what color?"},
+			map[string]any{"type": "image", "source": src, "cache_control": map[string]any{"type": "ephemeral"}},
+		}}},
+	}
+	msgs := params(BuildCCRequest(OpenAIRequestFromAnthropic(body), testCfg()))["messages"].([]any)
+	content := msgs[0].(map[string]any)["content"].([]any)
+	img := content[1].(map[string]any)
+	if img["type"] != "image" || img["source"].(map[string]any)["data"] != "AAA" {
+		t.Fatalf("image part=%v", img)
+	}
+	if _, leaked := img["cache_control"]; leaked {
+		t.Fatalf("cache_control should not leak upstream: %v", img)
+	}
+}
+
 func TestParseStreamEventLine(t *testing.T) {
 	cases := map[string]bool{
 		`{"type":"text-delta","text":"x"}`: true,  // raw NDJSON

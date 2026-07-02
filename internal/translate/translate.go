@@ -119,7 +119,7 @@ func messagesToCC(messages []any) []any {
 		}
 		switch getStr(m, "role") {
 		case "user":
-			out = append(out, map[string]any{"role": "user", "content": contentToText(m["content"])})
+			out = append(out, map[string]any{"role": "user", "content": userContentToCC(m["content"])})
 		case "assistant":
 			parts := []any{}
 			if text := contentToText(m["content"]); text != "" {
@@ -240,6 +240,46 @@ func toolsToCC(tools []any) []any {
 		})
 	}
 	return out
+}
+
+// userContentToCC converts OpenAI user content for Command Code. Text-only
+// content flattens to a plain string (the historical wire shape); when image
+// parts are present the content becomes typed parts so images survive the trip.
+// OpenAI image_url parts map to {"type":"image","image":<url>} — Command Code
+// takes data: and https: URLs in that one field — and pre-shaped image parts
+// (the Anthropic path emits these) pass through verbatim. See docs/ROADMAP.md
+// for the probe that established the accepted shapes.
+func userContentToCC(content any) any {
+	list, ok := content.([]any)
+	if !ok {
+		return contentToText(content)
+	}
+	parts := []any{}
+	hasImage := false
+	for _, pi := range list {
+		p := getMap(pi)
+		if p == nil {
+			continue
+		}
+		switch getStr(p, "type") {
+		case "text":
+			if t := getStr(p, "text"); t != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": t})
+			}
+		case "image_url":
+			if url := getStr(getMap(p["image_url"]), "url"); url != "" {
+				parts = append(parts, map[string]any{"type": "image", "image": url})
+				hasImage = true
+			}
+		case "image":
+			parts = append(parts, p)
+			hasImage = true
+		}
+	}
+	if !hasImage {
+		return contentToText(content)
+	}
+	return parts
 }
 
 // contentToText flattens OpenAI message content (string or list of parts) to text.

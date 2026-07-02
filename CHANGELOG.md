@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Image input** on both surfaces, verified against the live API. OpenAI
+  `image_url` parts (data: or https: URLs) and Anthropic `image` blocks
+  (`base64` and `url` sources) are forwarded to Command Code as typed content
+  parts; text-only content keeps its flattened-string shape. Vision is
+  per-model: Qwen 3.7 reads images, the deepseek v4 family silently ignores
+  them, GLM-5.2 rejects them — upstream behavior is relayed unchanged.
+
 ## [1.1.1] - 2026-06-20
 
 ### Fixed
