@@ -12,7 +12,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 build: ## Build a static binary for the host platform
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(BINARY) $(PKG)
 
-test: ## Run the test suite
+test: vet ## Run the test suite (vet first)
 	go test ./...
 
 vet: ## Run go vet
