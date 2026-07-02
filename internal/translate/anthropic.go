@@ -318,7 +318,6 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 	usage := map[string]any{"input_tokens": 0, "output_tokens": 0}
 
 	ev, ok := first, true
-loop:
 	for ok {
 		switch t, _ := ev["type"].(string); t {
 		case "text-delta":
@@ -422,10 +421,6 @@ loop:
 			return nil
 		}
 		ev, ok = next()
-		_ = ok
-		if !ok {
-			break loop
-		}
 	}
 
 	if current != "" {
