@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-07-02
 
 ### Added
 - **Hardening for exposed binds**: a 10s `ReadHeaderTimeout` (Slowloris guard),
@@ -74,6 +74,7 @@ text-only; image/multimodal parts are flattened to text (see `docs/ROADMAP.md`).
   `make release` (cross-compiles linux/darwin × amd64/arm64), a `Dockerfile` +
   `compose.yaml`, and a systemd user unit in `deploy/`.
 
+[1.3.0]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.3.0
 [1.2.0]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.2.0
 [1.1.1]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.1.1
 [1.1.0]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.1.0
