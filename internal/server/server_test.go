@@ -304,6 +304,27 @@ func TestAnthropicModelAlias(t *testing.T) {
 	}
 }
 
+func TestCountTokens(t *testing.T) {
+	srv := testServer("http://unused", nil) // no upstream call is made
+	rec := do(srv, "POST", "/v1/messages/count_tokens",
+		`{"model":"m","messages":[{"role":"user","content":"hello world"}]}`,
+		map[string]string{"x-api-key": "user_x"})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if n := decode(t, rec)["input_tokens"].(float64); n <= 0 {
+		t.Fatalf("input_tokens=%v", n)
+	}
+}
+
+func TestCountTokensMissingKey(t *testing.T) {
+	srv := testServer("http://unused", nil)
+	rec := do(srv, "POST", "/v1/messages/count_tokens", `{"model":"m","messages":[]}`, nil)
+	if rec.Code != 401 {
+		t.Fatalf("status %d", rec.Code)
+	}
+}
+
 func TestAnthropicStreamingEvents(t *testing.T) {
 	cc := httptest.NewServer(ccStream(200,
 		`{"type":"text-delta","text":"yo"}`, `{"type":"finish","finishReason":"stop"}`))

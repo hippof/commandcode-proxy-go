@@ -33,6 +33,8 @@ tool.
 - `POST /v1/messages` — Anthropic Messages-compatible (Claude Code, the
   Anthropic SDK), including `image` blocks. Vision depends on the upstream
   model (e.g. Qwen 3.7 reads images; the deepseek v4 family ignores them).
+- `POST /v1/messages/count_tokens` — local estimate (~4 chars/token; Command
+  Code has no counting endpoint), for client-side context budgeting.
 - `GET /v1/models` — proxies Command Code's live model catalog.
 - `GET /health`, plus a minimal status + request-log dashboard at `GET /admin`.
 

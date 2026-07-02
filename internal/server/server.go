@@ -55,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.listModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
 	mux.HandleFunc("POST /v1/messages", s.messages)
+	mux.HandleFunc("POST /v1/messages/count_tokens", s.countTokens)
 	mux.HandleFunc("GET /admin/data", s.adminData)
 	mux.HandleFunc("GET /admin", s.adminPage)
 	return s.withLogging(mux)
@@ -230,6 +231,33 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, message)
+}
+
+// countTokens serves Anthropic's count_tokens with a local estimate — Command
+// Code has no counting endpoint (see translate.CountInputTokens).
+func (s *Server) countTokens(w http.ResponseWriter, r *http.Request) {
+	body, errStatus, errMsg := readJSONObject(w, r)
+	if errMsg != "" {
+		writeAnthropicError(w, errStatus, errMsg)
+		return
+	}
+	key := auth.ResolveAPIKey(r.Header.Get("Authorization"), r.Header.Get("x-api-key"))
+	if key == "" {
+		writeAnthropicError(w, http.StatusUnauthorized,
+			"Missing Command Code API key. Send it as 'x-api-key: <key>' or 'Authorization: Bearer <key>'.")
+		return
+	}
+	requested, _ := body["model"].(string)
+	if requested == "" {
+		writeAnthropicError(w, http.StatusBadRequest, "'model' is required")
+		return
+	}
+	if body["messages"] == nil {
+		writeAnthropicError(w, http.StatusBadRequest, "'messages' is required")
+		return
+	}
+	setModel(r, s.cfg.ResolveModel(requested))
+	writeJSON(w, http.StatusOK, map[string]any{"input_tokens": translate.CountInputTokens(body)})
 }
 
 func (s *Server) ccHeaders(key string) map[string]string {

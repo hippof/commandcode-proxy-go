@@ -171,6 +171,28 @@ func TestAnthropicImageBlockPassthrough(t *testing.T) {
 	}
 }
 
+func TestCountInputTokens(t *testing.T) {
+	body := map[string]any{
+		"system": "abcd", // 4 chars
+		"messages": []any{
+			map[string]any{"role": "user", "content": "12345678"}, // 8 chars
+		},
+	}
+	// ceil(12/4) = 3 text tokens + 3 per-message overhead
+	if got := CountInputTokens(body); got != 6 {
+		t.Fatalf("CountInputTokens=%d, want 6", got)
+	}
+	// an image block adds a flat 1500
+	body["messages"] = []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "image", "source": map[string]any{"type": "base64", "data": "AAA"}},
+		}},
+	}
+	if got := CountInputTokens(body); got != 1+3+1500 {
+		t.Fatalf("CountInputTokens=%d, want 1504", got)
+	}
+}
+
 func TestParseStreamEventLine(t *testing.T) {
 	cases := map[string]bool{
 		`{"type":"text-delta","text":"x"}`: true,  // raw NDJSON

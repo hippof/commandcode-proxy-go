@@ -182,6 +182,57 @@ func orEmptyMap(v any) any {
 	return map[string]any{}
 }
 
+// ── Token counting (local estimate; no upstream call) ────────────────────────
+
+// CountInputTokens estimates the input tokens of an Anthropic Messages request
+// at roughly 4 characters per token, with a flat allowance per image block and
+// a small per-message overhead. Command Code has no counting endpoint, so this
+// is a local approximation — good enough for client-side context budgeting
+// (Claude Code's use), not billing.
+func CountInputTokens(body map[string]any) int {
+	chars := len(systemToText(body["system"]))
+	images := 0
+	msgs := getList(body["messages"])
+	for _, mi := range msgs {
+		m := getMap(mi)
+		if m == nil {
+			continue
+		}
+		if s, ok := m["content"].(string); ok {
+			chars += len(s)
+			continue
+		}
+		for _, bi := range getList(m["content"]) {
+			b := getMap(bi)
+			if b == nil {
+				continue
+			}
+			switch getStr(b, "type") {
+			case "text":
+				chars += len(getStr(b, "text"))
+			case "thinking":
+				chars += len(getStr(b, "thinking"))
+			case "tool_use":
+				chars += len(getStr(b, "name")) + len(jsonString(b["input"]))
+			case "tool_result":
+				chars += len(toolResultToText(b["content"]))
+			case "image":
+				images++
+			}
+		}
+	}
+	for _, ti := range getList(body["tools"]) {
+		t := getMap(ti)
+		if t == nil {
+			continue
+		}
+		chars += len(getStr(t, "name")) + len(getStr(t, "description")) + len(jsonString(t["input_schema"]))
+	}
+	const charsPerToken = 4
+	const imageTokens = 1500 // Anthropic's ceiling for a large image
+	return (chars+charsPerToken-1)/charsPerToken + 3*len(msgs) + imageTokens*images
+}
+
 // ── Response: shared mapping ──────────────────────────────────────────────────
 
 func stopReason(openaiFinish any) string {
