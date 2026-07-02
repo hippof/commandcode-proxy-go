@@ -102,6 +102,80 @@ func TestLiveNonStreamingCompletion(t *testing.T) {
 	}
 }
 
+// redPNG32 is a 32x32 solid-red PNG (upstream rejects images ≤ 10px per side).
+const redPNG32 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+
+// postMessages POSTs an Anthropic /v1/messages body and decodes the response.
+func postMessages(t *testing.T, url, key, body string) (int, map[string]any) {
+	t.Helper()
+	client := &http.Client{Timeout: 120 * time.Second}
+	req, _ := http.NewRequest("POST", url+"/v1/messages", strings.NewReader(body))
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var data map[string]any
+	if err := json.Unmarshal(b, &data); err != nil {
+		t.Fatalf("decode %q: %v", b, err)
+	}
+	return resp.StatusCode, data
+}
+
+// messageText joins the text blocks of an Anthropic message.
+func messageText(data map[string]any) string {
+	var parts []string
+	blocks, _ := data["content"].([]any)
+	for _, bi := range blocks {
+		if b, ok := bi.(map[string]any); ok && b["type"] == "text" {
+			if s, _ := b["text"].(string); s != "" {
+				parts = append(parts, s)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func TestLiveAnthropicMessages(t *testing.T) {
+	url, key, _ := liveServer(t)
+	status, data := postMessages(t, url, key,
+		`{"model":"`+smokeModel()+`","max_tokens":50,"messages":[{"role":"user","content":"Reply with exactly: PONG"}]}`)
+	if status == 402 {
+		return // plan-gated, acceptable
+	}
+	if status != 200 {
+		t.Fatalf("status %d: %v", status, data)
+	}
+	if data["type"] != "message" || data["role"] != "assistant" {
+		t.Fatalf("body %v", data)
+	}
+	if strings.TrimSpace(messageText(data)) == "" {
+		t.Fatalf("empty text: %v", data["content"])
+	}
+}
+
+// TestLiveAnthropicVision pins the vision-capable model verified in
+// docs/ROADMAP.md (the smoke model may be overridden to a text-only one).
+func TestLiveAnthropicVision(t *testing.T) {
+	url, key, _ := liveServer(t)
+	status, data := postMessages(t, url, key,
+		`{"model":"Qwen/Qwen3.7-Plus","max_tokens":50,"messages":[{"role":"user","content":[
+			{"type":"text","text":"What is the dominant color of the attached image? One word."},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+redPNG32+`"}}]}]}`)
+	if status == 402 {
+		return // plan-gated, acceptable
+	}
+	if status != 200 {
+		t.Fatalf("status %d: %v", status, data)
+	}
+	if text := messageText(data); !strings.Contains(strings.ToLower(text), "red") {
+		t.Fatalf("model did not see the red image: %q", text)
+	}
+}
+
 func TestLiveStreamingCompletion(t *testing.T) {
 	url, key, client := liveServer(t)
 	req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(liveChatBody(true)))
