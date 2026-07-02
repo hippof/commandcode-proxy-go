@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-07-02
+
+### Added
+- **`POST /v1/messages/count_tokens`** — Anthropic-compatible token counting as
+  a local estimate (~4 characters/token, flat 1500 per image block, small
+  per-message overhead). Command Code has no counting endpoint, so the figure
+  is for client-side context budgeting, not billing. Previously this route
+  404'd, which some Anthropic clients (Claude Code) call.
+
 ## [1.3.0] - 2026-07-02
 
 ### Added
@@ -74,6 +83,7 @@ text-only; image/multimodal parts are flattened to text (see `docs/ROADMAP.md`).
   `make release` (cross-compiles linux/darwin × amd64/arm64), a `Dockerfile` +
   `compose.yaml`, and a systemd user unit in `deploy/`.
 
+[1.3.1]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.3.1
 [1.3.0]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.3.0
 [1.2.0]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.2.0
 [1.1.1]: https://github.com/liwei/commandcode-proxy-go/releases/tag/v1.1.1
