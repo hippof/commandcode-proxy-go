@@ -72,6 +72,17 @@ func TestParseAliasesMalformed(t *testing.T) {
 	}
 }
 
+func TestWorkingDir(t *testing.T) {
+	t.Setenv("COMMANDCODE_WORKING_DIR", "/srv/app")
+	if c := Load(); c.WorkingDir != "/srv/app" {
+		t.Errorf("WorkingDir=%q, want /srv/app", c.WorkingDir)
+	}
+	t.Setenv("COMMANDCODE_WORKING_DIR", "")
+	if c := Load(); c.WorkingDir == "" {
+		t.Error("WorkingDir should fall back to the process working directory")
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("COMMANDCODE_API_BASE", "")
 	t.Setenv("COMMANDCODE_MODEL_ALIASES", "")

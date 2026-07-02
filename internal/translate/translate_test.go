@@ -45,6 +45,15 @@ func TestBuildCCRequestDefaultMaxTokens(t *testing.T) {
 	}
 }
 
+func TestBuildCCRequestUsesConfigWorkingDir(t *testing.T) {
+	cfg := testCfg()
+	cfg.WorkingDir = "/srv/app"
+	cc := BuildCCRequest(map[string]any{"model": "m", "messages": []any{}}, cfg)
+	if wd := cc["config"].(map[string]any)["workingDir"]; wd != "/srv/app" {
+		t.Fatalf("workingDir=%v, want /srv/app", wd)
+	}
+}
+
 func TestBuildCCRequestDanglingToolPruned(t *testing.T) {
 	req := map[string]any{
 		"model": "m",

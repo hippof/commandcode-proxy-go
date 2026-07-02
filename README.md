@@ -84,6 +84,7 @@ All optional, via environment variables:
 | `COMMANDCODE_API_BASE` | `https://api.commandcode.ai` | Upstream base URL |
 | `COMMANDCODE_MAX_RETRIES` | `2` | Retries for transient upstream 5xx/429 before any content |
 | `COMMANDCODE_TIMEOUT` | `300` | Upstream response-header timeout (seconds) |
+| `COMMANDCODE_WORKING_DIR` | proxy's cwd | Working directory reported to Command Code as grounding context |
 
 **Model aliases.** A request's `model` is resolved before forwarding: an exact
 full-id key in `COMMANDCODE_MODEL_ALIASES` wins, then a Claude-family match — a key

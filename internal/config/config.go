@@ -37,6 +37,11 @@ type Config struct {
 	// ModelAliases are exact model-id overrides from COMMANDCODE_MODEL_ALIASES.
 	ModelAliases map[string]string
 
+	// WorkingDir is reported to Command Code as the session's working directory
+	// (grounding context only; resolved here so translate stays free of env/file
+	// I/O).
+	WorkingDir string
+
 	// LogLevel sets log verbosity: debug, info (default), warn, or error.
 	LogLevel string
 }
@@ -65,6 +70,7 @@ func Load() *Config {
 		MaxRetries:         envInt("COMMANDCODE_MAX_RETRIES", 2),
 		RequestTimeout:     time.Duration(envFloat("COMMANDCODE_TIMEOUT", 300) * float64(time.Second)),
 		ModelAliases:       parseAliases(os.Getenv("COMMANDCODE_MODEL_ALIASES")),
+		WorkingDir:         workingDir(),
 		LogLevel:           strings.ToLower(env("COMMANDCODE_PROXY_LOG_LEVEL", "info")),
 	}
 }
@@ -123,6 +129,16 @@ func parseAliases(raw string) map[string]string {
 		}
 	}
 	return out
+}
+
+// workingDir resolves the directory reported to Command Code:
+// COMMANDCODE_WORKING_DIR, else the process working directory.
+func workingDir() string {
+	if v := os.Getenv("COMMANDCODE_WORKING_DIR"); v != "" {
+		return v
+	}
+	wd, _ := os.Getwd()
+	return wd
 }
 
 func env(key, def string) string {

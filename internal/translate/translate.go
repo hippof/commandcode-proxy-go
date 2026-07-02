@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -42,7 +41,7 @@ func BuildCCRequest(req map[string]any, cfg *config.Config) map[string]any {
 	}
 
 	return map[string]any{
-		"config": configBlock(),
+		"config": configBlock(cfg),
 		"memory": nil,
 		"taste":  nil,
 		"skills": nil,
@@ -61,13 +60,9 @@ func BuildCCRequest(req map[string]any, cfg *config.Config) map[string]any {
 
 // configBlock is a neutral context block. Command Code uses it for grounding;
 // minimal values are accepted.
-func configBlock() map[string]any {
-	wd := os.Getenv("COMMANDCODE_WORKING_DIR")
-	if wd == "" {
-		wd, _ = os.Getwd()
-	}
+func configBlock(cfg *config.Config) map[string]any {
 	return map[string]any{
-		"workingDir":    wd,
+		"workingDir":    cfg.WorkingDir,
 		"date":          time.Now().Format("2006-01-02"),
 		"environment":   fmt.Sprintf("%s-%s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version()),
 		"structure":     []any{},
