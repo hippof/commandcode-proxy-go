@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-14
+
+Sync with `pi-commandcode-provider` 0.5.0/0.5.1 (the reference implementation).
+
+### Added
+- **Tool-result images now reach the model**: Command Code silently drops media
+  parts inside tool results, so images found in a tool message (OpenAI) or
+  `tool_result` block (Anthropic) are re-emitted as a follow-up user turn — the
+  same workaround the Command Code CLI ships. Verified live (the model names
+  the image's color).
+- **Reasoning effort forwarding**: OpenAI `reasoning_effort` passes through to
+  Command Code (`minimal` lowers to `low`, `none` omits); an Anthropic
+  `thinking` budget maps to `low`/`medium`/`high` tiers following Claude Code's
+  think/megathink/ultrathink presets. Values are validated per model upstream.
+- **Credential redaction**: upstream-derived error text is scrubbed of
+  credential-shaped substrings (Bearer tokens, `user_…` keys, query secrets)
+  before reaching a client, in case Command Code ever echoes a key back.
+
+### Changed
+- **Image parts use the current CLI wire format** (`command-code@1.15.1`): a
+  `mimeType` field accompanies data: URLs, and Anthropic `base64` sources are
+  converted to data: URLs instead of passing the `source` block verbatim.
+  Verified live on both surfaces.
+- **Default client version header is `1.15.1`** (was `0.29.0`), matching the
+  current Command Code CLI; still overridable via `COMMANDCODE_CLI_VERSION`.
+
 ## [1.3.1] - 2026-07-02
 
 ### Added
