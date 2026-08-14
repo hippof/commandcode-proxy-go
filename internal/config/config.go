@@ -62,7 +62,7 @@ func Load() *Config {
 	return &Config{
 		GenerateURL:        base + "/alpha/generate",
 		ModelsURL:          env("COMMANDCODE_MODELS_URL", base+"/provider/v1/models"),
-		CLIVersion:         env("COMMANDCODE_CLI_VERSION", "0.29.0"),
+		CLIVersion:         env("COMMANDCODE_CLI_VERSION", "1.15.1"),
 		TasteLearning:      env("COMMANDCODE_TASTE_LEARNING", "false"),
 		DefaultTemperature: envFloat("COMMANDCODE_DEFAULT_TEMPERATURE", 0.3),
 		DefaultMaxTokens:   envInt("COMMANDCODE_DEFAULT_MAX_TOKENS", 32000),
