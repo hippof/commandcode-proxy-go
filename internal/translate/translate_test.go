@@ -250,6 +250,58 @@ func TestAnthropicToolResultImagesBecomeUserTurn(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortForwarding(t *testing.T) {
+	base := func(effort any) map[string]any {
+		req := map[string]any{
+			"model":    "m",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}
+		if effort != nil {
+			req["reasoning_effort"] = effort
+		}
+		return params(BuildCCRequest(req, testCfg()))
+	}
+	if got := base("high")["reasoning_effort"]; got != "high" {
+		t.Fatalf("reasoning_effort=%v, want high", got)
+	}
+	if got := base("minimal")["reasoning_effort"]; got != "low" {
+		t.Fatalf("reasoning_effort=%v, want low for minimal", got)
+	}
+	for _, effort := range []any{nil, "none"} {
+		if _, has := base(effort)["reasoning_effort"]; has {
+			t.Fatalf("reasoning_effort should be absent for %v", effort)
+		}
+	}
+}
+
+func TestAnthropicThinkingMapsToEffort(t *testing.T) {
+	build := func(thinking any) map[string]any {
+		body := map[string]any{
+			"model": "m", "max_tokens": float64(16),
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}
+		if thinking != nil {
+			body["thinking"] = thinking
+		}
+		return params(BuildCCRequest(OpenAIRequestFromAnthropic(body), testCfg()))
+	}
+	cases := []struct {
+		budget float64
+		want   string
+	}{{4096, "low"}, {10000, "medium"}, {31999, "high"}}
+	for _, c := range cases {
+		p := build(map[string]any{"type": "enabled", "budget_tokens": c.budget})
+		if got := p["reasoning_effort"]; got != c.want {
+			t.Fatalf("budget %v: reasoning_effort=%v, want %s", c.budget, got, c.want)
+		}
+	}
+	for _, thinking := range []any{nil, map[string]any{"type": "disabled"}} {
+		if _, has := build(thinking)["reasoning_effort"]; has {
+			t.Fatalf("reasoning_effort should be absent for thinking=%v", thinking)
+		}
+	}
+}
+
 func TestCountInputTokens(t *testing.T) {
 	body := map[string]any{
 		"system": "abcd", // 4 chars

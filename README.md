@@ -28,12 +28,12 @@ tool.
 ## What it does
 
 - `POST /v1/chat/completions` — streaming and non-streaming, with tool calling,
-  reasoning (`reasoning_content`) passthrough, and image input (`image_url`
-  parts; data or https URLs), including images in tool messages.
+  reasoning (`reasoning_content` out, `reasoning_effort` in), and image input
+  (`image_url` parts; data or https URLs), including images in tool messages.
 - `POST /v1/messages` — Anthropic Messages-compatible (Claude Code, the
-  Anthropic SDK), including `image` blocks (also inside `tool_result`). Vision
-  depends on the upstream model (e.g. Qwen 3.7 reads images; the deepseek v4
-  family ignores them).
+  Anthropic SDK), including `image` blocks (also inside `tool_result`) and a
+  `thinking` budget mapped to a reasoning effort. Vision depends on the upstream
+  model (e.g. Qwen 3.7 reads images; the deepseek v4 family ignores them).
 - `POST /v1/messages/count_tokens` — local estimate (~4 chars/token; Command
   Code has no counting endpoint), for client-side context budgeting.
 - `GET /v1/models` — proxies Command Code's live model catalog.

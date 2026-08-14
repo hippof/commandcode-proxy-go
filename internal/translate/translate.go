@@ -40,21 +40,41 @@ func BuildCCRequest(req map[string]any, cfg *config.Config) map[string]any {
 		temperature = cfg.DefaultTemperature
 	}
 
+	params := map[string]any{
+		"model":       req["model"],
+		"messages":    ccMessages,
+		"tools":       toolsToCC(getList(req["tools"])),
+		"system":      systemText,
+		"max_tokens":  resolveMaxTokens(req, cfg),
+		"temperature": temperature,
+		"stream":      true,
+	}
+	if eff := reasoningEffort(req); eff != "" {
+		params["reasoning_effort"] = eff
+	}
+
 	return map[string]any{
-		"config": configBlock(cfg),
-		"memory": nil,
-		"taste":  nil,
-		"skills": nil,
-		"params": map[string]any{
-			"model":       req["model"],
-			"messages":    ccMessages,
-			"tools":       toolsToCC(getList(req["tools"])),
-			"system":      systemText,
-			"max_tokens":  resolveMaxTokens(req, cfg),
-			"temperature": temperature,
-			"stream":      true,
-		},
+		"config":   configBlock(cfg),
+		"memory":   nil,
+		"taste":    nil,
+		"skills":   nil,
+		"params":   params,
 		"threadId": newUUID(),
+	}
+}
+
+// reasoningEffort maps the OpenAI reasoning_effort field onto Command Code's
+// params.reasoning_effort. "minimal" (OpenAI-only) lowers to "low", "none"
+// omits the field; anything else passes through for Command Code to validate
+// per model, and "" means the request didn't ask.
+func reasoningEffort(req map[string]any) string {
+	switch eff := getStr(req, "reasoning_effort"); eff {
+	case "minimal":
+		return "low"
+	case "none":
+		return ""
+	default:
+		return eff
 	}
 }
 

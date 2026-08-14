@@ -244,9 +244,14 @@ a `content_block_*` state machine).
 `input_schema` tools, and especially the **dangling tool-call pruning** CC rejects
 requests without) in *two* encoders. Normalizing to the OpenAI shape lands exactly
 where the CC encoder already operates; Anthropic (everything-is-a-block) is the
-structural outlier, so the OpenAI hop is a funnel, not a lossy U-turn. The
-features the hop "drops" (input `thinking`, `tool_choice`) aren't caused by the
-hop — CC has no forced-tool, so a direct path would drop them too.
+structural outlier, so the OpenAI hop is a funnel, not a lossy U-turn. The one
+feature the hop "drops" (`tool_choice`) isn't caused by the hop — CC has no
+forced-tool, so a direct path would drop it too. An input `thinking` budget maps
+onto CC's `params.reasoning_effort` (≤4k → `low`, ≤16k → `medium`, else `high`,
+mirroring Claude Code's think/megathink/ultrathink presets), the same field the
+OpenAI surface fills from `reasoning_effort` (`minimal` lowers to `low`, `none`
+omits); values pass through for CC to validate per model, matching how the pi
+extension sends its supported effort levels.
 
 **Images through the hop.** A live probe (2026-07-02) showed `/alpha/generate`
 accepts image parts in a user message's content array — both the AI-SDK shape

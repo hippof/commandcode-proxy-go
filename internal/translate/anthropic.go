@@ -23,7 +23,33 @@ func OpenAIRequestFromAnthropic(body map[string]any) map[string]any {
 	if tools := anthToolsToOpenAI(body["tools"]); len(tools) > 0 {
 		out["tools"] = tools
 	}
+	if eff := effortFromThinking(getMap(body["thinking"])); eff != "" {
+		out["reasoning_effort"] = eff
+	}
 	return out
+}
+
+// effortFromThinking maps Anthropic's thinking config onto a Command Code
+// reasoning effort. The budget tiers follow Claude Code's presets (think 4k /
+// megathink 10k / ultrathink 32k); "high" is the ceiling because it is the
+// only top tier every reasoning model accepts. Disabled or budget-less
+// thinking adds nothing — Command Code then picks the model's default depth.
+func effortFromThinking(t map[string]any) string {
+	if getStr(t, "type") != "enabled" {
+		return ""
+	}
+	budget, ok := toInt(t["budget_tokens"])
+	if !ok {
+		return ""
+	}
+	switch {
+	case budget <= 4096:
+		return "low"
+	case budget <= 16384:
+		return "medium"
+	default:
+		return "high"
+	}
 }
 
 func systemToText(system any) string {
