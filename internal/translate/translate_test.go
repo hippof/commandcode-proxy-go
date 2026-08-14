@@ -132,8 +132,25 @@ func TestUserContentImageMapping(t *testing.T) {
 		t.Fatalf("content=%v", content)
 	}
 	img := content[1].(map[string]any)
-	if img["type"] != "image" || img["image"] != "data:image/png;base64,AAA" {
+	if img["type"] != "image" || img["image"] != "data:image/png;base64,AAA" || img["mimeType"] != "image/png" {
 		t.Fatalf("image part=%v", img)
+	}
+}
+
+func TestUserContentHTTPSImageHasNoMimeType(t *testing.T) {
+	req := map[string]any{
+		"model": "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://x.test/a.png"}},
+		}}},
+	}
+	msgs := params(BuildCCRequest(req, testCfg()))["messages"].([]any)
+	img := msgs[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if img["image"] != "https://x.test/a.png" {
+		t.Fatalf("image part=%v", img)
+	}
+	if _, has := img["mimeType"]; has {
+		t.Fatalf("https URL should carry no mimeType: %v", img)
 	}
 }
 
@@ -151,7 +168,7 @@ func TestUserContentTextOnlyStaysString(t *testing.T) {
 	}
 }
 
-func TestAnthropicImageBlockPassthrough(t *testing.T) {
+func TestAnthropicImageBlockMapsToDataURL(t *testing.T) {
 	src := map[string]any{"type": "base64", "media_type": "image/png", "data": "AAA"}
 	body := map[string]any{
 		"model": "m", "max_tokens": float64(16),
@@ -163,11 +180,73 @@ func TestAnthropicImageBlockPassthrough(t *testing.T) {
 	msgs := params(BuildCCRequest(OpenAIRequestFromAnthropic(body), testCfg()))["messages"].([]any)
 	content := msgs[0].(map[string]any)["content"].([]any)
 	img := content[1].(map[string]any)
-	if img["type"] != "image" || img["source"].(map[string]any)["data"] != "AAA" {
+	if img["type"] != "image" || img["image"] != "data:image/png;base64,AAA" || img["mimeType"] != "image/png" {
 		t.Fatalf("image part=%v", img)
 	}
 	if _, leaked := img["cache_control"]; leaked {
 		t.Fatalf("cache_control should not leak upstream: %v", img)
+	}
+	if _, has := img["source"]; has {
+		t.Fatalf("source should not travel upstream: %v", img)
+	}
+}
+
+func TestToolResultImagesBecomeUserTurn(t *testing.T) {
+	req := map[string]any{
+		"model": "m",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "take a screenshot"},
+			map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
+				"id": "tid", "type": "function",
+				"function": map[string]any{"name": "shot", "arguments": "{}"},
+			}}},
+			map[string]any{"role": "tool", "tool_call_id": "tid", "content": []any{
+				map[string]any{"type": "text", "text": "done"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAA"}},
+			}},
+		},
+	}
+	msgs := params(BuildCCRequest(req, testCfg()))["messages"].([]any)
+	last := msgs[len(msgs)-1].(map[string]any)
+	if last["role"] != "user" {
+		t.Fatalf("want trailing user turn with images, got %v", msgs)
+	}
+	img := last["content"].([]any)[0].(map[string]any)
+	if img["type"] != "image" || img["image"] != "data:image/png;base64,AAA" {
+		t.Fatalf("image part=%v", img)
+	}
+	tool := msgs[len(msgs)-2].(map[string]any)
+	out := tool["content"].([]any)[0].(map[string]any)["output"].(map[string]any)
+	if tool["role"] != "tool" || out["value"] != "done" {
+		t.Fatalf("tool message=%v", tool)
+	}
+}
+
+func TestAnthropicToolResultImagesBecomeUserTurn(t *testing.T) {
+	src := map[string]any{"type": "base64", "media_type": "image/png", "data": "AAA"}
+	body := map[string]any{
+		"model": "m", "max_tokens": float64(16),
+		"messages": []any{
+			map[string]any{"role": "user", "content": "take a screenshot"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": "tid", "name": "shot", "input": map[string]any{}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "tid", "content": []any{
+					map[string]any{"type": "text", "text": "done"},
+					map[string]any{"type": "image", "source": src},
+				}},
+			}},
+		},
+	}
+	msgs := params(BuildCCRequest(OpenAIRequestFromAnthropic(body), testCfg()))["messages"].([]any)
+	last := msgs[len(msgs)-1].(map[string]any)
+	if last["role"] != "user" {
+		t.Fatalf("want trailing user turn with images, got %v", msgs)
+	}
+	img := last["content"].([]any)[0].(map[string]any)
+	if img["image"] != "data:image/png;base64,AAA" || img["mimeType"] != "image/png" {
+		t.Fatalf("image part=%v", img)
 	}
 }
 

@@ -251,14 +251,18 @@ hop — CC has no forced-tool, so a direct path would drop them too.
 **Images through the hop.** A live probe (2026-07-02) showed `/alpha/generate`
 accepts image parts in a user message's content array — both the AI-SDK shape
 `{"type":"image","image":<data:/https: URL>}` and Anthropic image blocks
-(`{"type":"image","source":{...}}`) verbatim. So the hop is no longer a ceiling:
-OpenAI `image_url` parts map to the single `image` field, the Anthropic path
-re-emits its image blocks unchanged (`type`+`source` only, so `cache_control`
-doesn't leak), and `translate.userContentToCC` forwards both; text-only content
-keeps the historical flattened-string shape. Vision is per model — deepseek v4
-silently ignores images, GLM-5.2 rejects them in-stream, Qwen 3.7 reads them —
-and those upstream behaviors surface to the caller unchanged, like
-`MODEL_NOT_IN_PLAN`.
+verbatim. Both surfaces now emit the shape the current Command Code CLI
+(`command-code@1.15.1`) sends: `{"type":"image","image":<URL>}` plus a
+`mimeType` field when knowable (always for data: URLs). OpenAI `image_url`
+parts map straight to it; the Anthropic path converts a `base64` source into a
+data: URL (so `cache_control` and other extras don't leak) and passes `url`
+sources through; text-only content keeps the historical flattened-string shape.
+Images inside tool results get special handling: the probe showed CC silently
+drops media parts in tool-result outputs, so — like the CLI — the proxy
+re-emits tool-result images as a follow-up user turn, where they demonstrably
+reach the model. Vision is per model — deepseek v4 silently ignores images,
+GLM-5.2 rejects them in-stream, Qwen 3.7 reads them — and those upstream
+behaviors surface to the caller unchanged, like `MODEL_NOT_IN_PLAN`.
 
 ### D15. Observability: an in-memory request log + dashboard
 

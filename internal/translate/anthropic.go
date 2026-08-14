@@ -105,18 +105,15 @@ func anthMessageToOpenAI(m map[string]any) []any {
 				parts = append(parts, map[string]any{"type": "text", "text": t})
 			}
 		case "image":
-			// Command Code accepts Anthropic image blocks verbatim (probe in
-			// docs/ROADMAP.md); keep type+source only so extras like
-			// cache_control don't leak upstream.
-			if src := getMap(b["source"]); src != nil {
-				parts = append(parts, map[string]any{"type": "image", "source": src})
+			if part := anthImageToCC(getMap(b["source"])); part != nil {
+				parts = append(parts, part)
 				hasImage = true
 			}
 		case "tool_result":
 			out = append(out, map[string]any{
 				"role":         "tool",
 				"tool_call_id": getStr(b, "tool_use_id"),
-				"content":      toolResultToText(b["content"]),
+				"content":      toolResultContent(b["content"]),
 			})
 		}
 	}
@@ -127,6 +124,47 @@ func anthMessageToOpenAI(m map[string]any) []any {
 		out = append(out, map[string]any{"role": "user", "content": contentToText(parts)})
 	}
 	return out
+}
+
+// anthImageToCC converts an Anthropic image source into Command Code's image
+// part shape (see ccImagePart). Extras like cache_control never leak upstream
+// because only the source's data travels.
+func anthImageToCC(src map[string]any) map[string]any {
+	switch getStr(src, "type") {
+	case "base64":
+		mt, data := getStr(src, "media_type"), getStr(src, "data")
+		if mt != "" && data != "" {
+			return ccImagePart("data:" + mt + ";base64," + data)
+		}
+	case "url":
+		if u := getStr(src, "url"); u != "" {
+			return ccImagePart(u)
+		}
+	}
+	return nil
+}
+
+// toolResultContent renders a tool_result's content for the OpenAI shape:
+// plain text normally, a typed-part list when image blocks are present so
+// they survive into messagesToCC (which re-emits them as a user turn).
+func toolResultContent(content any) any {
+	imgs := []any{}
+	for _, bi := range getList(content) {
+		if b := getMap(bi); b != nil && getStr(b, "type") == "image" {
+			if part := anthImageToCC(getMap(b["source"])); part != nil {
+				imgs = append(imgs, part)
+			}
+		}
+	}
+	text := toolResultToText(content)
+	if len(imgs) == 0 {
+		return text
+	}
+	parts := []any{}
+	if text != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
+	return append(parts, imgs...)
 }
 
 func toolResultToText(content any) string {

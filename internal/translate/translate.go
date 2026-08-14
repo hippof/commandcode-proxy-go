@@ -163,6 +163,12 @@ func messagesToCC(messages []any) []any {
 					"output":     map[string]any{"type": "text", "value": contentToText(m["content"])},
 				}},
 			})
+			// Command Code silently drops media parts inside tool results (probe
+			// in docs/ROADMAP.md); the current CLI re-emits tool-result images as
+			// a follow-up user turn instead, so mirror that.
+			if imgs := imagePartsToCC(m["content"]); len(imgs) > 0 {
+				out = append(out, map[string]any{"role": "user", "content": imgs})
+			}
 		}
 	}
 	return out
@@ -245,10 +251,10 @@ func toolsToCC(tools []any) []any {
 // userContentToCC converts OpenAI user content for Command Code. Text-only
 // content flattens to a plain string (the historical wire shape); when image
 // parts are present the content becomes typed parts so images survive the trip.
-// OpenAI image_url parts map to {"type":"image","image":<url>} — Command Code
-// takes data: and https: URLs in that one field — and pre-shaped image parts
-// (the Anthropic path emits these) pass through verbatim. See docs/ROADMAP.md
-// for the probe that established the accepted shapes.
+// OpenAI image_url parts map to the Command Code image shape via ccImagePart,
+// and pre-shaped image parts (the Anthropic path emits these) pass through
+// verbatim. See docs/ROADMAP.md for the probe that established the accepted
+// shapes.
 func userContentToCC(content any) any {
 	list, ok := content.([]any)
 	if !ok {
@@ -268,7 +274,7 @@ func userContentToCC(content any) any {
 			}
 		case "image_url":
 			if url := getStr(getMap(p["image_url"]), "url"); url != "" {
-				parts = append(parts, map[string]any{"type": "image", "image": url})
+				parts = append(parts, ccImagePart(url))
 				hasImage = true
 			}
 		case "image":
@@ -280,6 +286,54 @@ func userContentToCC(content any) any {
 		return contentToText(content)
 	}
 	return parts
+}
+
+// ccImagePart builds Command Code's image part — {"type":"image","image":<data:
+// or https: URL>} plus "mimeType" when knowable, matching what the current CLI
+// (command-code@1.15.1) sends.
+func ccImagePart(url string) map[string]any {
+	part := map[string]any{"type": "image", "image": url}
+	if mt := dataURLMime(url); mt != "" {
+		part["mimeType"] = mt
+	}
+	return part
+}
+
+// dataURLMime extracts the mime type from a data: URL, or "" for other URLs.
+func dataURLMime(url string) string {
+	rest, ok := strings.CutPrefix(url, "data:")
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexAny(rest, ";,"); i > 0 {
+		return rest[:i]
+	}
+	return ""
+}
+
+// imagePartsToCC collects the image parts of an OpenAI content list as Command
+// Code image parts, tolerating both image_url and pre-shaped image parts.
+func imagePartsToCC(content any) []any {
+	list, ok := content.([]any)
+	if !ok {
+		return nil
+	}
+	var out []any
+	for _, pi := range list {
+		p := getMap(pi)
+		if p == nil {
+			continue
+		}
+		switch getStr(p, "type") {
+		case "image_url":
+			if url := getStr(getMap(p["image_url"]), "url"); url != "" {
+				out = append(out, ccImagePart(url))
+			}
+		case "image":
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // contentToText flattens OpenAI message content (string or list of parts) to text.
