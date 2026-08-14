@@ -176,6 +176,63 @@ func TestLiveAnthropicVision(t *testing.T) {
 	}
 }
 
+// TestLiveReasoningEffort pins a model whose effort support is known from the
+// Command Code CLI catalog (deepseek v4 accepts high/max), proving upstream
+// accepts the forwarded params.reasoning_effort field.
+func TestLiveReasoningEffort(t *testing.T) {
+	url, key, client := liveServer(t)
+	body := `{"model":"deepseek/deepseek-v4-flash","reasoning_effort":"high","max_tokens":400,"messages":[{"role":"user","content":"Reply with exactly: PONG"}]}`
+	req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 402 {
+		return // plan-gated, acceptable
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d: %s", resp.StatusCode, b)
+	}
+	var data map[string]any
+	json.Unmarshal(b, &data)
+	msg := data["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	content, _ := msg["content"].(string)
+	reasoning, _ := msg["reasoning_content"].(string)
+	if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
+		t.Fatalf("no content or reasoning: %s", b)
+	}
+}
+
+// TestLiveToolResultImage proves a tool-result image actually reaches the model:
+// Command Code drops media inside tool-result outputs (docs/ROADMAP.md probe),
+// so a correct color answer can only come from the proxy re-emitting the image
+// as a follow-up user turn.
+func TestLiveToolResultImage(t *testing.T) {
+	url, key, _ := liveServer(t)
+	status, data := postMessages(t, url, key,
+		`{"model":"Qwen/Qwen3.7-Plus","max_tokens":50,
+		"tools":[{"name":"screenshot","description":"Take a screenshot","input_schema":{"type":"object"}}],
+		"messages":[
+			{"role":"user","content":"Take a screenshot and tell me its dominant color. Answer with one word."},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_live_1","name":"screenshot","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_live_1","content":[
+				{"type":"text","text":"screenshot captured"},
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+redPNG32+`"}}]}]}]}`)
+	if status == 402 {
+		return // plan-gated, acceptable
+	}
+	if status != 200 {
+		t.Fatalf("status %d: %v", status, data)
+	}
+	if text := messageText(data); !strings.Contains(strings.ToLower(text), "red") {
+		t.Fatalf("model did not see the tool-result image: %q", text)
+	}
+}
+
 func TestLiveStreamingCompletion(t *testing.T) {
 	url, key, client := liveServer(t)
 	req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(liveChatBody(true)))
