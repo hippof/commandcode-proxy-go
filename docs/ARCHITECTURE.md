@@ -167,8 +167,11 @@ arrives before any event, the HTTP-status retry never violates the
 from `Authorization: Bearer` or `x-api-key` (ignoring known placeholders) and
 relays it unchanged; no key → `401`. **Why.** A stateless relay is simpler and
 safer — each caller brings its own key, so one instance serves different accounts
-with no shared secret to provision or leak. **Trade-offs.** No "centralize the
-secret" mode; for the common single-user case that's just one config line.
+with no shared secret to provision or leak. As a backstop, upstream-derived error
+text is scrubbed of credential-shaped substrings (`translate.RedactSecrets`,
+ported from the pi extension) before it reaches a client, in case Command Code
+ever echoes a key back. **Trade-offs.** No "centralize the secret" mode; for the
+common single-user case that's just one config line.
 
 ### D8. Always stream upstream; buffer downstream on demand
 

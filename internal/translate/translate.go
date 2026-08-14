@@ -412,10 +412,20 @@ func ParseStreamEventLine(line string) Event {
 	if json.Unmarshal([]byte(s), &parsed) != nil {
 		return nil
 	}
-	if m, ok := parsed.(map[string]any); ok {
-		return m
+	m, ok := parsed.(map[string]any)
+	if !ok {
+		return nil
 	}
-	return nil
+	// Scrub credential-shaped text from error events here, at the single point
+	// where upstream stream data enters, so every surface inherits it (D7).
+	if t, _ := m["type"].(string); t == "error" {
+		if e := getMap(m["error"]); e != nil {
+			if msg := getStr(e, "message"); msg != "" {
+				e["message"] = RedactSecrets(msg)
+			}
+		}
+	}
+	return m
 }
 
 func MapFinishReason(reason any) string {

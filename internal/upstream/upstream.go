@@ -186,11 +186,16 @@ func isRetryable(e map[string]any) bool {
 	return v
 }
 
-// extractError pulls a clean (message, code) from a Command Code error body.
-// Command Code non-200 responses look like
+// extractError pulls a clean (message, code) from a Command Code error body,
+// with credential-shaped text scrubbed. Command Code non-200 responses look like
 // {"success": false, "error": {"code", "status", "message", "docs"}}. Falls back
 // to the raw (truncated) text when it isn't that shape.
 func extractError(text string) (string, string) {
+	msg, code := rawExtractError(text)
+	return translate.RedactSecrets(msg), code
+}
+
+func rawExtractError(text string) (string, string) {
 	trunc := text
 	if len(trunc) > 500 {
 		trunc = trunc[:500]
