@@ -249,7 +249,10 @@ requests without) in *two* encoders. Normalizing to the OpenAI shape lands exact
 where the CC encoder already operates; Anthropic (everything-is-a-block) is the
 structural outlier, so the OpenAI hop is a funnel, not a lossy U-turn. The one
 feature the hop "drops" (`tool_choice`) isn't caused by the hop — CC has no
-forced-tool, so a direct path would drop it too. An input `thinking` budget maps
+forced-tool: a live probe (2026-08) confirmed `/alpha/generate` calls the tool
+when the prompt asks but ignores `tool_choice` in every form (`auto`/`any`/named),
+so forwarding it is a no-op and a direct path would drop it too. An input
+`thinking` budget maps
 onto CC's `params.reasoning_effort` (≤4k → `low`, ≤16k → `medium`, else `high`,
 mirroring Claude Code's think/megathink/ultrathink presets), the same field the
 OpenAI surface fills from `reasoning_effort` (`minimal` lowers to `low`, `none`
