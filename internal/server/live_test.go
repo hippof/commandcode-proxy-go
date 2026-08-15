@@ -233,6 +233,41 @@ func TestLiveToolResultImage(t *testing.T) {
 	}
 }
 
+// TestLiveThinkingSignature proves a thinking block that reaches Claude Code is
+// signed. It streams /v1/messages with thinking enabled on a reasoning-capable
+// model; if the model surfaces thinking at all, that block must be signed
+// (signature_delta) or Claude Code would drop it. No thinking surfaced → nothing
+// to verify (skip), since the model, not the proxy, decides to think.
+func TestLiveThinkingSignature(t *testing.T) {
+	url, key, _ := liveServer(t)
+	client := &http.Client{Timeout: 120 * time.Second}
+	body := `{"model":"deepseek/deepseek-v4-flash","max_tokens":512,"stream":true,
+		"thinking":{"type":"enabled","budget_tokens":20000},
+		"messages":[{"role":"user","content":"Think step by step, then answer: what is 17 * 23?"}]}`
+	req, _ := http.NewRequest("POST", url+"/v1/messages", strings.NewReader(body))
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 402 {
+		return // plan-gated, acceptable
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d: %s", resp.StatusCode, raw)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"thinking_delta"`) {
+		t.Skip("model surfaced no thinking; nothing to sign")
+	}
+	if !strings.Contains(s, `"signature_delta"`) {
+		t.Fatalf("thinking present but unsigned (no signature_delta): %s", s)
+	}
+}
+
 func TestLiveStreamingCompletion(t *testing.T) {
 	url, key, client := liveServer(t)
 	req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(liveChatBody(true)))
