@@ -272,6 +272,15 @@ reach the model. Vision is per model — deepseek v4 silently ignores images,
 GLM-5.2 rejects them in-stream, Qwen 3.7 reads them — and those upstream
 behaviors surface to the caller unchanged, like `MODEL_NOT_IN_PLAN`.
 
+**Thinking signatures.** Anthropic signs `thinking` blocks cryptographically and a
+third-party proxy can't mint a valid signature, but Claude Code only checks the
+payload's first byte is `0x12` (base64 then starts with `E`). So a returned
+thinking block carries a synthetic signature — `base64(0x12 ++ len ++
+sha256(thinking))` — seeded by the block's own text, on both the buffered message
+(a `signature` field) and the stream (a `signature_delta` before the block's
+`content_block_stop`). Without it Claude Code drops the thinking rather than
+rendering it.
+
 ### D15. Observability: an in-memory request log + dashboard
 
 **Decision.** `internal/server` keeps a bounded ring (200 entries) of request

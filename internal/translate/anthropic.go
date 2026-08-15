@@ -1,6 +1,25 @@
 package translate
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"strings"
+)
+
+// fakeThinkingSignature mints a signature for a thinking block. Anthropic signs
+// thinking cryptographically and a third-party proxy can't produce a valid one,
+// but Claude Code only checks the payload's first byte is 0x12 (base64 then
+// starts with 'E'); this satisfies that so the client renders thinking. The
+// thinking text seeds the digest so each block's signature differs.
+func fakeThinkingSignature(thinkingText string) string {
+	seed := thinkingText
+	if seed == "" {
+		seed = "dsh-proxy-thinking"
+	}
+	sum := sha256.Sum256([]byte(seed))
+	raw := append([]byte{0x12, byte(len(sum))}, sum[:]...)
+	return base64.StdEncoding.EncodeToString(raw)
+}
 
 // OpenAIRequestFromAnthropic adapts an Anthropic Messages request into the
 // OpenAI request shape, so it can flow through BuildCCRequest unchanged.
@@ -357,7 +376,7 @@ func MessageFromCompletion(completion map[string]any, model, mid string) map[str
 
 	blocks := []any{}
 	if rc := getStr(msg, "reasoning_content"); rc != "" {
-		blocks = append(blocks, map[string]any{"type": "thinking", "thinking": rc})
+		blocks = append(blocks, map[string]any{"type": "thinking", "thinking": rc, "signature": fakeThinkingSignature(rc)})
 	}
 	if c := getStr(msg, "content"); c != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": c})
@@ -441,9 +460,28 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 
 	index := -1
 	current := "" // "" | "text" | "thinking" | "tool_use"
+	var thinkingText strings.Builder
 	sawTool := false
 	stopReasonVal := "end_turn"
 	usage := map[string]any{"input_tokens": 0, "output_tokens": 0}
+
+	// closeCurrent stops the active block, first emitting a signature_delta for a
+	// thinking block (Anthropic's shape; Claude Code needs it to render thinking).
+	closeCurrent := func() error {
+		if current == "" {
+			return nil
+		}
+		if current == "thinking" {
+			if err := emit(anthEvent("content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": index,
+				"delta": map[string]any{"type": "signature_delta", "signature": fakeThinkingSignature(thinkingText.String())},
+			})); err != nil {
+				return err
+			}
+			thinkingText.Reset()
+		}
+		return emit(blockStopFrame(index))
+	}
 
 	ev, ok := first, true
 	for ok {
@@ -454,10 +492,8 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 				break
 			}
 			if current != "text" {
-				if current != "" {
-					if err := emit(blockStopFrame(index)); err != nil {
-						return err
-					}
+				if err := closeCurrent(); err != nil {
+					return err
 				}
 				index++
 				current = "text"
@@ -480,10 +516,8 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 				break
 			}
 			if current != "thinking" {
-				if current != "" {
-					if err := emit(blockStopFrame(index)); err != nil {
-						return err
-					}
+				if err := closeCurrent(); err != nil {
+					return err
 				}
 				index++
 				current = "thinking"
@@ -494,6 +528,7 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 					return err
 				}
 			}
+			thinkingText.WriteString(text)
 			if err := emit(anthEvent("content_block_delta", map[string]any{
 				"type": "content_block_delta", "index": index,
 				"delta": map[string]any{"type": "thinking_delta", "thinking": text},
@@ -502,10 +537,8 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 			}
 		case "tool-call":
 			sawTool = true
-			if current != "" {
-				if err := emit(blockStopFrame(index)); err != nil {
-					return err
-				}
+			if err := closeCurrent(); err != nil {
+				return err
 			}
 			index++
 			current = "tool_use"
@@ -531,10 +564,8 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 			stopReasonVal = stopReason(MapFinishReason(ev["finishReason"]))
 			usage = anthropicUsage(MapUsage(ev["totalUsage"]))
 		case "error":
-			if current != "" {
-				if err := emit(blockStopFrame(index)); err != nil {
-					return err
-				}
+			if err := closeCurrent(); err != nil {
+				return err
 			}
 			e := getMap(ev["error"])
 			if e == nil {
@@ -551,10 +582,8 @@ func StreamMessage(first Event, next NextFunc, model, mid string, emit func(stri
 		ev, ok = next()
 	}
 
-	if current != "" {
-		if err := emit(blockStopFrame(index)); err != nil {
-			return err
-		}
+	if err := closeCurrent(); err != nil {
+		return err
 	}
 	if sawTool && stopReasonVal == "end_turn" {
 		stopReasonVal = "tool_use"
