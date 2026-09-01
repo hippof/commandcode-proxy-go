@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Command Code 账号管理器</title>
+<style>
+  :root {
+    --bg: #101217; --panel: #171a21; --panel2: #1e2230; --line: #2a2f3d;
+    --text: #e8eaf0; --muted: #9aa3b5; --accent: #5b8cff; --ok: #4ade80;
+    --warn: #facc15; --err: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.5; padding: 22px 26px 60px;
+    user-select: none;
+  }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 14px; margin-bottom: 10px; color: var(--muted); font-weight: 600; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .45; cursor: default; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .dot.ok { background: var(--ok); } .dot.off { background: #555c6e; } .dot.ext { background: var(--warn); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
+  .badge.active { background: rgba(74,222,128,.12); color: var(--ok); border-color: rgba(74,222,128,.4); }
+  .mono { font-family: Consolas, monospace; font-size: 12px; color: var(--muted); user-select: text; }
+  .plan-ok { color: var(--ok); } .plan-no { color: var(--err); } .plan-none { color: var(--muted); }
+  #loginBox { display: none; }
+  #toast {
+    position: fixed; bottom: 18px; right: 18px; max-width: 460px; display: none;
+    background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 10px 14px; white-space: pre-wrap; user-select: text;
+  }
+  #toast.err { border-left-color: var(--err); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; user-select: text; }
+  .grow { flex: 1; }
+</style>
+</head>
+<body>
+  <h1>Command Code 账号管理器</h1>
+  <div class="sub">多账号保管库 · 终端登录 / 一键切换 · 本地 commandcode-proxy</div>
+
+  <div class="card">
+    <h2>本地代理</h2>
+    <div class="row">
+      <span id="proxyDot" class="dot off"></span>
+      <span id="proxyText" class="grow">检测中…</span>
+      <button id="btnProxyStart">启动</button>
+      <button id="btnProxyStop">停止</button>
+      <button id="btnProxyBuild">重新构建</button>
+      <button id="btnDashboard">仪表盘 /admin</button>
+    </div>
+    <div class="hint" id="proxyBinaryHint"></div>
+  </div>
+
+  <div class="card">
+    <h2>账号（auth.json 保管库）</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="btnLogin" class="primary">＋ 登录新账号（打开终端）</button>
+      <button id="btnImport">导入当前 CLI 已登录账号</button>
+      <span class="grow"></span>
+      <button id="btnRefresh">刷新</button>
+    </div>
+    <table>
+      <thead>
+        <tr><th>账号</th><th>备注</th><th>密钥</th><th>套餐探测</th><th>登录时间</th><th style="text-align:right">操作</th></tr>
+      </thead>
+      <tbody id="acctBody"><tr><td colspan="6" class="plan-none">加载中…</td></tr></tbody>
+    </table>
+    <div class="hint" id="dirHint"></div>
+    <div class="row" style="margin-top:10px">
+      <span style="font-size:12px;color:var(--muted)">点窗口 × 时：</span>
+      <select id="closeAction" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 8px">
+        <option value="tray">最小化到系统托盘（推荐，托盘图标可快捷切换账号）</option>
+        <option value="quit">直接退出程序</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card" id="loginBox">
+    <h2>登录进度</h2>
+    <div class="row">
+      <span id="loginMsg" class="grow"></span>
+      <button id="btnLoginAbort" class="danger">取消登录</button>
+      <button id="btnLoginClose" style="display:none">知道了</button>
+    </div>
+    <div class="hint">登录期间当前账号会被安全挪开、完成后自动放回，不会影响正在使用的账号；新账号存入保管库，确认切换才会激活。</div>
+  </div>
+
+  <div class="card">
+    <h2>API 消费端接入（Claude Code 等）</h2>
+    <div class="row">
+      <span class="mono grow" id="keyHelperPath">—</span>
+      <button id="btnCopyHelper">复制路径</button>
+    </div>
+    <div class="hint">在 Claude Code 的 settings.json 里设置 <span class="mono">"apiKeyHelper": "&lt;上面路径&gt;"</span>，
+      切换账号后新请求即用新密钥，无需重启。代理端点：<span class="mono" id="proxyBase"></span>（OpenAI / Anthropic 兼容接口均可用）。</div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
