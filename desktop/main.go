@@ -1,4 +1,4 @@
-// Command commandcode-desktop is a tray-only manager for multiple Command Code
+// Command cmdc-desktop is a tray-only manager for multiple Command Code
 // credentials. Logging in stays a manual terminal step (`cmdc login`); this
 // app only reads the credential the CLI is logged in with, saves copies for
 // safe keeping, and switches between them. There is no window and no

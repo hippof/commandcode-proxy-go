@@ -1,6 +1,6 @@
 // Command release assembles the single-file release artifact: it copies the
-// built executable into dist/ under a versioned name and prints its size and
-// SHA-256 so the file can be shared and verified.
+// built executable into dist/ under a versioned name and writes a SHA-256
+// sidecar so the file can be shared and verified.
 package main
 
 import (
@@ -12,18 +12,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func main() {
-	in := flag.String("in", filepath.Join("bin", "desktop.exe"), "built executable")
+	in := flag.String("in", filepath.Join("bin", "cmdc-desktop.exe"), "built executable")
 	outDir := flag.String("out", "dist", "output directory")
 	version := flag.String("version", "dev", "version stamped into the file name")
-	name := flag.String("name", "commandcode-desktop", "artifact base name")
+	name := flag.String("name", "cmdc-desktop", "artifact base name")
 	flag.Parse()
 
-	ext := ""
-	if runtime.GOOS == "windows" {
-		ext = ".exe"
+	// The artifact extension follows the target executable, not the host.
+	ext := filepath.Ext(*in)
+	ver := strings.TrimSpace(*version)
+	if ver == "" {
+		ver = "dev"
 	}
 	if _, err := os.Stat(*in); err != nil {
 		fmt.Fprintf(os.Stderr, "release: %s 不存在，请先构建：%v\n", *in, err)
@@ -33,7 +36,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "release:", err)
 		os.Exit(1)
 	}
-	out := filepath.Join(*outDir, fmt.Sprintf("%s-%s-%s-%s%s", *name, *version, runtime.GOOS, runtime.GOARCH, ext))
+	out := filepath.Join(*outDir, fmt.Sprintf("%s-%s-%s-%s%s", *name, ver, runtime.GOOS, runtime.GOARCH, ext))
 
 	src, err := os.Open(*in)
 	if err != nil {

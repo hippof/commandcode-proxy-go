@@ -1,4 +1,4 @@
-# desktop/ — Command Code 账号管理器（纯托盘）
+# desktop/ — cmdc-desktop（Command Code 账号管理器，纯托盘）
 
 多账号**凭证**管理工具：把 `cmdc login` 登录得到的 `auth.json` 存进保管库、
 随时切换。**没有主窗口、没有前端**——系统托盘菜单就是全部界面，结果用系统
@@ -25,7 +25,7 @@
 
 ## 运行
 
-双击 `bin/desktop.exe` 即常驻托盘（无窗口，内存约 20MB）。
+双击 `bin/cmdc-desktop.exe` 即常驻托盘（无窗口，内存约 20MB）。
 
 菜单**单层横铺**，用分隔线分组；**当前用不上的项直接置灰、点了不会报错**：
 
@@ -61,7 +61,7 @@
 2. **保存**：托盘 →「保存当前登录凭证」→ 存入保管库（弹窗确认账号名）。
 3. **重复** 1–2 收集多个账号；托盘 →「刷新套餐额度」看每个账号的额度状态。
 4. **切换**：托盘里直接点目标账号那一行（当前账号那行是状态标记，点不动）。切换同时写入
-   `~/.commandcode/auth.json` 与 `%APPDATA%\commandcode-desktop\active.key`，
+   `~/.commandcode/auth.json` 与 `%APPDATA%\cmdc-desktop\active.key`，
    CLI 下次启动、消费端下次请求即用新账号（代理无需重启，它是 keyless 的）。
 
 ## 数据位置
@@ -69,8 +69,8 @@
 | 内容 | 路径 |
 |---|---|
 | 保管库（auth.json 副本 + 备注 + 套餐缓存） | `~/.commandcode-accounts/accounts/<userId>/` |
-| 应用配置 / active.key / keyhelper.cmd / proxy.log | `%APPDATA%\commandcode-desktop\` |
-| 从内置资源释放出来的代理二进制（自动，无需手工） | `%APPDATA%\commandcode-desktop\commandcode-proxy.exe` |
+| 应用配置 / active.key / keyhelper.cmd / proxy.log | `%APPDATA%\cmdc-desktop\` |
+| 从内置资源释放出来的代理二进制（自动，无需手工） | `%APPDATA%\cmdc-desktop\commandcode-proxy.exe` |
 | CLI 凭据目录（读写的目标） | `%USERPROFILE%\.commandcode\auth.json` |
 
 ## 接入 Claude Code（切换即生效）
@@ -142,7 +142,7 @@ Claude Code 会缓存 apiKeyHelper 的返回值；切换后可重启它，或设
 go build -o commandcode-proxy.exe ./cmd/commandcode-proxy   # 或 make build
 
 # 2) 构建桌面程序：build 任务会自动把上面那个二进制拷进 proxybin/ 再嵌入
-cd desktop && wails3 build      # -> bin/desktop.exe（内含代理，约 19MB）
+cd desktop && wails3 build      # -> bin/cmdc-desktop.exe（内含代理，约 19MB）
 
 go test ./...   # 保管库 / 凭据目录 / 代理释放 / 探测 / 托盘动作 均有单测
 ```
@@ -154,7 +154,7 @@ go test ./...   # 保管库 / 凭据目录 / 代理释放 / 探测 / 托盘动�
 
 所有环节的错误都会记录到**按天分文件**的日志里（即使通知气泡被你随手关掉也能追溯）：
 
-- 位置：`%APPDATA%\commandcode-desktop\logs\2026-09-11.log`（文件名即当天日期，
+- 位置：`%APPDATA%\cmdc-desktop\logs\2026-09-11.log`（文件名即当天日期，
   跨天自动新建文件，无需重启；托盘 →「打开日志目录」直达）；
 - 覆盖：启动/自检、内置代理释放与子进程启停、网关启停与请求期错误（上游不可达、
   没有激活账号——同一类错误最多每分钟记一次以免刷屏）、账号保存/切换/停用/删除、
@@ -175,7 +175,7 @@ go test ./...   # 保管库 / 凭据目录 / 代理释放 / 探测 / 托盘动�
 ```sh
 cd desktop
 wails3 task release:single
-# -> dist/commandcode-desktop-<版本>-windows-amd64.exe（约 20MB）
+# -> dist/cmdc-desktop-<版本>-windows-amd64.exe（约 20MB）
 #    以及同名 .sha256 校验文件
 ```
 
@@ -188,11 +188,50 @@ wails3 task release:single
 | 内容 | 位置 |
 |---|---|
 | 账号保管库 | `%USERPROFILE%\.commandcode-accounts\` |
-| 配置 / 日志 / 导出的 key / 释放出来的代理 | `%APPDATA%\commandcode-desktop\` |
+| 配置 / 日志 / 导出的 key / 释放出来的代理 | `%APPDATA%\cmdc-desktop\` |
 | CLI 凭据目录（读写目标） | `%USERPROFILE%\.commandcodeuth.json` |
 
 已验证：把该 exe 单独放进一个空目录、并删掉 `%APPDATA%` 里的代理副本后运行，
 它会自动释放内置代理、按序启动代理与网关，经网关发出的请求能得到真实模型回复。
+
+## 发布到 GitHub Releases
+
+仓库里带了一个**独立**的工作流 `.github/workflows/release-desktop.yml`
+（与上游的 `ci.yml` 分开，合并上游不会冲突）。它在 windows runner 上：
+
+1. 用本仓库源码构建代理 → `go build ./cmd/commandcode-proxy`；
+2. 跑两个模块的测试（上游 + `desktop/`）；
+3. `wails3 task release:single` 产出单文件 exe，并把代理嵌进去；
+4. 上传构建产物，并**创建/更新 GitHub Release**，附上 exe 与 `.sha256` 校验文件。
+
+### 触发方式
+
+**A. 打标签（推荐，适合正式版本）**
+
+```sh
+git tag desktop-v1.0.0
+git push origin desktop-v1.0.0      # 只有 desktop-v* 前缀会触发发布
+```
+
+**B. 手动运行（适合随时出包）**
+
+GitHub 仓库页面 → **Actions** → 左侧「Release desktop」→ **Run workflow**，
+填一个版本号（例如 `desktop-v1.0.0`）即可；勾选 draft 可先出草稿再手动发布。
+不填版本号则只构建并上传 artifact，不创建 Release。
+
+> 首次使用需确认仓库 Settings → Actions → General 里允许运行工作流（默认允许），
+> 且 Workflow permissions 为 **Read and write**（工作流已声明 `contents: write`，
+> 公开仓库用默认 `GITHUB_TOKEN` 即可，无需自建 PAT）。
+
+### 本地出包（不发 Release）
+
+```sh
+cd desktop && wails3 task release:single    # -> dist/ 里的单文件 + 校验文件
+```
+
+产物是 `dist/cmdc-desktop-<版本>-windows-amd64.exe`（约 20MB，内含代理）。
+要发到 Release 也可以手动上传到 Release 页面，或先装 `gh` CLI 后
+`gh release create desktop-v1.0.0 desktop/dist/*`。
 
 ## 安全
 

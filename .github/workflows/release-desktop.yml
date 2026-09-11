@@ -1,0 +1,104 @@
+name: Release desktop
+
+# Builds the single-file desktop app (which embeds the proxy binary) and
+# attaches it to a GitHub Release.
+#
+# Triggers:
+#   * pushing a tag like desktop-v1.0.0  -> publishes that tag's release
+#   * manual run (Actions -> Release desktop -> Run workflow), optionally
+#     creating the tag/release for you.
+#
+# This workflow lives beside the upstream ci.yml and does not touch it, so
+# merging upstream updates never conflicts here.
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. desktop-v1.0.0). Leave empty to only build an artifact."
+        required: false
+        default: ""
+      draft:
+        description: "Publish as draft release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs tags
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install wails3 CLI
+        shell: bash
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+
+      # 1) Build the proxy from the fork's own source, so the desktop build
+      #    embeds exactly this revision's proxy.
+      - name: Build proxy
+        shell: bash
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o commandcode-proxy.exe ./cmd/commandcode-proxy
+
+      # 2) Tests of both modules. The desktop module's tray/gateway/... tests
+      #    are the ones guarding the app's behaviour.
+      - name: Test upstream module
+        shell: bash
+        run: go test ./...
+
+      - name: Test desktop module
+        shell: bash
+        working-directory: desktop
+        run: |
+          go vet ./...
+          go test ./...
+
+      # 3) Build the single-file app; embedproxy copies the proxy built above.
+      - name: Build desktop app (single file)
+        shell: bash
+        working-directory: desktop
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME}"; fi
+          if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then VERSION="dev-$(git rev-parse --short HEAD)"; fi
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          wails3 task release:single APP_VERSION="$VERSION"
+
+      - name: Show artifact
+        shell: bash
+        working-directory: desktop
+        run: ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cmdc-desktop-windows-amd64
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.sha256
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.version != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Notes: reuse the app's README section list plus the checksum file.
+          gh release create "$APP_VERSION" \
+            desktop/dist/*.exe desktop/dist/*.sha256 \
+            --title "Command Code 账号管理器 $APP_VERSION" \
+            --generate-notes \
+            ${{ github.event.inputs.draft == 'true' && '--draft' || '' }}

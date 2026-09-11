@@ -1,7 +1,7 @@
 // Package settings persists the desktop app's own configuration and exports
 // the active account's API key for consumers like Claude Code's apiKeyHelper.
 //
-// Everything lives under %APPDATA%\commandcode-desktop (or the platform
+// Everything lives under %APPDATA%\cmdc-desktop (or the platform
 // equivalent), never in the repository or the CLI credential directory.
 package settings
 
@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"commandcode-desktop/internal/applog"
 )
 
 // Config is persisted to config.json. Zero fields fall back to defaults.
@@ -73,7 +75,8 @@ func DefaultConfig() Config {
 	}
 }
 
-// Merge fills empty fields of c from d.
+// Merge fills empty fields of c from d, so callers keep whatever they
+// configured and only inherit the parts they left unset.
 func (c *Config) Merge(d Config) {
 	if c.ProxyHost == "" {
 		c.ProxyHost = d.ProxyHost
@@ -125,11 +128,65 @@ func Dir() (string, error) {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	d := filepath.Join(base, "commandcode-desktop")
+	d := filepath.Join(base, appDirName)
+	if err := migrateLegacyDir(base, d); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", err
 	}
 	return d, nil
+}
+
+const (
+	// appDirName is the app-data folder the app owns.
+	appDirName = "cmdc-desktop"
+	// legacyAppDirName is the folder earlier builds used; it is migrated on
+	// first run so existing config/logs/exported keys survive the rename.
+	legacyAppDirName = "commandcode-desktop"
+)
+
+// migrateLegacyDir renames the pre-rename app-data folder when the new one
+// does not exist yet. A failure is reported but never fatal: the app simply
+// starts with a fresh folder if the move is not possible.
+func migrateLegacyDir(base, current string) error {
+	if _, err := os.Stat(current); err == nil {
+		return nil // already on the new name
+	}
+	old := filepath.Join(base, legacyAppDirName)
+	if _, err := os.Stat(old); err != nil {
+		return nil // nothing to migrate
+	}
+	if err := os.Rename(old, current); err != nil {
+		// Cross-device or locked: copy what we can, then leave the old folder.
+		if cerr := copyDir(old, current); cerr != nil {
+			return cerr
+		}
+	}
+	applog.Info("settings", "已迁移应用数据目录", "from", old, "to", current)
+	return nil
+}
+
+// copyDir copies a directory tree (used only as a rename fallback).
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, info.Mode().Perm())
+	})
 }
 
 // legacyGatewayPort is the port this app used before 54321 became the fixed
@@ -155,8 +212,10 @@ func Load() (Config, error) {
 	if stored.GatewayPort == legacyGatewayPort {
 		stored.GatewayPort = 0 // adopt the current default
 	}
-	cfg.Merge(stored)
-	return cfg, nil
+	// Stored values win; Merge only fills what the file left unset. (The other
+	// order — defaults winning — silently ignored every hand-edited setting.)
+	stored.Merge(cfg)
+	return stored, nil
 }
 
 // Save writes config.json.

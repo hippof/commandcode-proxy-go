@@ -13,3 +13,6 @@ build/android/gen/
 # Embedded proxy binary (build artifact, produced by the root module)
 proxybin/commandcode-proxy
 proxybin/commandcode-proxy.exe
+
+# Versioned single-file release artifacts
+dist

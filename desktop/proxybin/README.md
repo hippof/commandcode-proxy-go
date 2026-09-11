@@ -14,7 +14,7 @@ make build                      # -> ./commandcode-proxy(.exe)
 #    （等价的等价手动操作：cp commandcode-proxy.exe desktop/proxybin/）
 
 # 3) 构建桌面程序
-cd desktop && wails3 build      # -> bin/desktop.exe（内含代理）
+cd desktop && wails3 build      # -> bin/cmdc-desktop.exe（内含代理）
 ```
 
 没有放二进制时仍可构建（得到一个不含代理的包，启动代理会提示重新打包），

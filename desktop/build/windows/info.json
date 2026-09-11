@@ -5,11 +5,11 @@
 	"info": {
 		"0000": {
 			"ProductVersion": "0.1.0",
-			"CompanyName": "My Company",
-			"FileDescription": "A desktop application",
-			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "My Product",
-			"Comments": "This is a comment"
+			"CompanyName": "cmdc-desktop",
+			"FileDescription": "cmdc-desktop — Command Code multi-account manager",
+			"LegalCopyright": "© 2026, cmdc-desktop",
+			"ProductName": "cmdc-desktop",
+			"Comments": "Tray manager for Command Code accounts"
 		}
 	}
 }
