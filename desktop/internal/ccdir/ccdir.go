@@ -143,3 +143,31 @@ func AuthExists() bool {
 	_, err = os.Stat(p)
 	return err == nil
 }
+
+// swapTempDir is where a former build moved the credential directory while it
+// orchestrated a login. It is only consulted to undo such an interruption.
+func swapTempDir(dir string) string {
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".ccdesktop-tmp")
+}
+
+// RecoverInterruptedSwap restores the credential directory if an interrupted
+// login swap left it displaced (the app used to move ~/.commandcode aside).
+// Returns true when something was put back.
+func RecoverInterruptedSwap() bool {
+	dir, err := Dir()
+	if err != nil {
+		return false
+	}
+	temp := swapTempDir(dir)
+	if _, err := os.Stat(temp); err != nil {
+		return false
+	}
+	// If a valid auth.json already sits in the real dir, leave both alone:
+	// the user is logged in, and the displaced copy is still recoverable by
+	// hand from the temp path.
+	if _, err := os.Stat(filepath.Join(dir, AuthFileName)); err == nil {
+		return false
+	}
+	_ = os.RemoveAll(dir)
+	return os.Rename(temp, dir) == nil
+}

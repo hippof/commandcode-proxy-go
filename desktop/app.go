@@ -1,14 +1,17 @@
-// App is the single service bound to the Wails frontend: it orchestrates the
-// vault, the credential directory, the CLI login flow, the local proxy child
-// process, and plan probing. All key material stays server-side; the frontend
-// only ever sees masked keys.
+// App is the backend of the tray-only manager. It owns the credential vault,
+// the local proxy child process, and plan probing. There is no window and no
+// frontend: the system tray menu plus native dialogs are the entire UI, so
+// every method here is either a tray action or a piece of tray state.
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
+	"os"
+	"os/exec"
+	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,48 +19,40 @@ import (
 
 	"commandcode-desktop/internal/ccdir"
 	"commandcode-desktop/internal/creds"
-	"commandcode-desktop/internal/login"
 	"commandcode-desktop/internal/probe"
 	"commandcode-desktop/internal/proxy"
 	"commandcode-desktop/internal/settings"
 	"commandcode-desktop/internal/vault"
 )
 
-// AccountView is one vault account plus its activation state.
-type AccountView struct {
-	vault.Account
-	Active bool `json:"active"`
+// proxyCtl is the slice of the proxy manager the app uses. It is an interface
+// so tests can drive the tray without spawning a real child process —
+// *proxy.Manager satisfies it.
+type proxyCtl interface {
+	Status() proxy.State
+	Start() error
+	Stop() error
+	BaseURL() string
 }
 
-// Snapshot is everything the UI needs in one refresh.
-type Snapshot struct {
-	Accounts    []AccountView `json:"accounts"`
-	ActiveID    string        `json:"activeId"`
-	DirUser     string        `json:"dirUser"` // userId currently in ~/.commandcode ("" = none)
-	DirUserName string        `json:"dirUserName"`
-	DirKeyHint  string        `json:"dirKeyHint"` // masked key of the dir account, if known
-	Proxy       proxy.State   `json:"proxy"`
-	Login       login.Status  `json:"login"`
-	ProbeModels []string      `json:"probeModels"`
-	KeyHelper   string        `json:"keyHelper"` // path to the apiKeyHelper script
-	CloseAction string        `json:"closeAction"`
+// planProber probes one account key; *probe.Prober satisfies it.
+type planProber interface {
+	Plan(ctx context.Context, apiKey string, models []string) (*probe.Result, error)
 }
 
 // App holds long-lived managers. It is constructed once in main.
 type App struct {
 	runtime *wailsruntime.App
 	vl      *vault.Vault
-	px      *proxy.Manager
-	sess    *login.Session
+	px      proxyCtl
 
 	mu        sync.Mutex
-	win       wailsruntime.Window
 	cfg       settings.Config
-	probers   map[string]*probe.Prober // per base URL
-	onChanged func()                   // tray refresh hook (set from main)
+	probers   map[string]planProber
+	newProber func(baseURL string) planProber
 }
 
-// NewApp wires the services and recovers from an interrupted login.
+// NewApp wires the vault, proxy manager and settings.
 func NewApp() (*App, error) {
 	cfg, err := settings.Load()
 	if err != nil {
@@ -71,138 +66,174 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if login.RecoverAfterRestart() {
-		// Best-effort breadcrumb; never contains secrets.
-		fmt.Println("recovered credential directory from an interrupted login")
-	}
-	a := &App{
-		cfg:     cfg,
-		vl:      vl,
-		px:      proxy.NewManager(cfg),
-		probers: map[string]*probe.Prober{},
-	}
-	a.sess = login.NewSession(a.emitLogin)
-	a.sess.SetSuccessHook(a.archiveLoginResult)
-	return a, nil
+	return &App{
+		cfg:       cfg,
+		vl:        vl,
+		px:        proxy.NewManager(cfg),
+		probers:   map[string]planProber{},
+		newProber: func(baseURL string) planProber { return probe.New(baseURL) },
+	}, nil
 }
 
-// SetRuntime stores the Wails app for event emission.
+// SetRuntime stores the Wails app handle (needed for native dialogs).
 func (a *App) SetRuntime(r *wailsruntime.App) { a.runtime = r }
 
-// ShowWindow brings the main window back from the tray.
-func (a *App) ShowWindow() {
-	a.mu.Lock()
-	w := a.win
-	a.mu.Unlock()
-	if w != nil {
-		_ = w.Show()
-		w.Focus()
-	}
+// PrepareProxy extracts the embedded proxy binary into the app-data directory
+// at startup, so the first "start proxy" needs no extraction step. Failures
+// are non-fatal: the proxy start path reports them with full context.
+func (a *App) PrepareProxy() (string, error) { return proxy.EnsureExtracted() }
+
+// RecoverInterruptedSwap undoes a credential-directory swap left behind by an
+// older build that orchestrated logins itself. Called once at startup.
+func (a *App) RecoverInterruptedSwap() bool { return ccdir.RecoverInterruptedSwap() }
+
+// ------------------------------------------------------------------- state
+
+// CurrentCLI describes the credential currently installed for the CLI.
+type CurrentCLI struct {
+	Present bool
+	UserID  string
+	Name    string
+	Masked  string
 }
 
-// EmitError pushes a toast message to the frontend.
-func (a *App) EmitError(msg string) { a.emit(EventError, msg) }
-
-// ActiveAccountID returns the last activated account id.
-func (a *App) ActiveAccountID() string { return a.vl.ActiveID() }
-
-// MainWindow exposes the primary window for tray wiring.
-func (a *App) MainWindow() wailsruntime.Window {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.win
-}
-
-// SetMainWindow stores the window created in main.go.
-func (a *App) SetMainWindow(w wailsruntime.Window) {
-	a.mu.Lock()
-	a.win = w
-	a.mu.Unlock()
-}
-
-func (a *App) emit(s string, data any) {
-	if a.runtime != nil {
-		a.runtime.Event.Emit(s, data)
-	}
-}
-
-func (a *App) emitLogin(st login.Status) {
-	a.emit(EventLogin, st)
-	a.emit(EventChanged, true)
-}
-
-// Event names registered with Wails (mirrored in JS).
-const (
-	EventLogin   = "login:status"
-	EventChanged = "app:changed"
-	EventError   = "app:error"
-)
-
-func (a *App) archiveLoginResult(auth *creds.Auth, raw []byte) (bool, error) {
-	_, lookErr := a.vl.Account(auth.UserID)
-	isNew := lookErr != nil // absent (or unreadable) => new entry
-	if _, err := a.vl.Put(auth, raw); err != nil {
-		return false, err
-	}
-	return isNew, nil
-}
-
-// ---------------------------------------------------------------- API surface
-
-// Snapshot returns the full UI state.
-func (a *App) Snapshot() (*Snapshot, error) {
-	accounts, err := a.vl.List()
+// CurrentCLI reads ~/.commandcode/auth.json (the credential the CLI and any
+// consumer will actually use right now).
+func (a *App) CurrentCLI() CurrentCLI {
+	auth, _, err := ccdir.ReadAuth()
 	if err != nil {
-		return nil, err
+		return CurrentCLI{}
 	}
-	activeID := a.vl.ActiveID()
-	views := make([]AccountView, 0, len(accounts))
-	for _, ac := range accounts {
-		views = append(views, AccountView{Account: ac, Active: ac.ID == activeID})
+	return CurrentCLI{
+		Present: true,
+		UserID:  creds.SafeID(auth.UserID),
+		Name:    auth.UserName,
+		Masked:  creds.MaskKey(auth.APIKey),
 	}
-	snap := &Snapshot{
-		Accounts:    views,
-		ActiveID:    activeID,
-		Proxy:       a.px.Status(),
-		Login:       a.sess.State(),
-		ProbeModels: a.cfg.ProbeModels,
-	}
-	if auth, _, err := ccdir.ReadAuth(); err == nil {
-		snap.DirUser = creds.SafeID(auth.UserID)
-		snap.DirUserName = auth.UserName
-		snap.DirKeyHint = creds.MaskKey(auth.APIKey)
-	}
-	if p, err := settings.EnsureKeyHelper(); err == nil {
-		snap.KeyHelper = p
-	}
-	snap.CloseAction = a.cfg.CloseAction
-	return snap, nil
 }
 
-// ImportCurrent archives the account currently logged in via the CLI.
-func (a *App) ImportCurrent() error {
+// Accounts lists the vault, newest display order (userName).
+func (a *App) Accounts() []vault.Account {
+	list, err := a.vl.List()
+	if err != nil {
+		return nil
+	}
+	return list
+}
+
+// ActiveID is the account id recorded as activated.
+func (a *App) ActiveID() string { return a.vl.ActiveID() }
+
+// VaultDir is the folder holding the saved credentials.
+func (a *App) VaultDir() string { return a.vl.Root() }
+
+// TrayState is everything the menu needs to render itself *and* to decide
+// which entries are actionable, so the tray never offers a click that is
+// guaranteed to fail.
+type TrayState struct {
+	LoggedIn      bool // a credential is installed in the CLI dir
+	CurrentName   string
+	CurrentID     string
+	CurrentMasked string
+
+	Accounts []vault.Account
+	ActiveID string // last account we activated
+
+	ProxyRunning  bool
+	ProxyExternal bool
+	ProxyBaseURL  string
+	ProxyCanStart bool // already running, or the embedded binary is on disk
+}
+
+// TrayState snapshots the current state for menu rendering.
+func (a *App) TrayState() TrayState {
+	st := TrayState{
+		Accounts: a.Accounts(),
+		ActiveID: a.vl.ActiveID(),
+	}
+	if cur := a.CurrentCLI(); cur.Present {
+		st.LoggedIn = true
+		st.CurrentName = cur.Name
+		st.CurrentID = cur.UserID
+		st.CurrentMasked = cur.Masked
+	}
+	ps := a.px.Status()
+	st.ProxyRunning = ps.Running
+	st.ProxyExternal = ps.External
+	st.ProxyBaseURL = ps.BaseURL
+	st.ProxyCanStart = ps.Running || ps.BinaryExists
+	return st
+}
+
+// Protected reports whether an account is currently in use (so deleting its
+// saved copy would be a mistake).
+func (st TrayState) Protected(id string) bool {
+	return id != "" && (id == st.ActiveID || id == st.CurrentID)
+}
+
+// Tooltip is the tray hover text.
+func (a *App) Tooltip() string {
+	cur := a.CurrentCLI()
+	if !cur.Present {
+		return "Command Code 账号 · 未登录"
+	}
+	return "Command Code 账号 · 当前：" + displayNameOf(cur.Name, cur.UserID)
+}
+
+func displayNameOf(name, id string) string {
+	if name != "" {
+		return name
+	}
+	return id
+}
+
+// PlanLabel renders an account's cached plan probe for a menu label.
+func PlanLabel(ac vault.Account) string {
+	if ac.Plan == nil {
+		return "未探测"
+	}
+	if ac.Plan.Blocked {
+		return "无额度"
+	}
+	return fmt.Sprintf("可用模型 %d", len(ac.Plan.Allowed))
+}
+
+// AccountLabel is the menu text for one saved account.
+func AccountLabel(ac vault.Account) string {
+	name := displayNameOf(ac.UserName, ac.ID)
+	if ac.Note != "" {
+		name += "（" + ac.Note + "）"
+	}
+	return fmt.Sprintf("%s — %s", name, PlanLabel(ac))
+}
+
+// ------------------------------------------------------------------ actions
+
+// SaveCurrentCredential stores the credential the CLI is logged in with
+// (reads auth.json) into the vault. It is the counterpart of the manual
+// `cmdc login` flow: log in anywhere, then save.
+func (a *App) SaveCurrentCredential() (vault.Account, bool, error) {
 	auth, raw, err := ccdir.ReadAuth()
 	if err != nil {
-		if isNotExist(err) {
-			return fmt.Errorf("当前没有已登录的 CLI 账号（%s 不存在）。请先在终端运行 `cmdc login`（mac/linux：`cmd login`）完成登录，或点「登录新账号」由本程序打开终端。", ccdir.AuthFileName)
+		if os.IsNotExist(err) {
+			return vault.Account{}, false, fmt.Errorf("没有找到登录凭证（%s 不存在）。请先在终端运行 cmdc login（mac/linux：cmd login）完成登录，再点「保存当前登录凭证」。", ccdir.AuthFileName)
 		}
-		return fmt.Errorf("读取当前 CLI 凭据失败：%w", err)
+		return vault.Account{}, false, fmt.Errorf("读取登录凭证失败：%w", err)
 	}
-	if _, err := a.vl.Put(auth, raw); err != nil {
-		return err
+	_, lookErr := a.vl.Account(auth.UserID)
+	ac, err := a.vl.Put(auth, raw)
+	if err != nil {
+		return vault.Account{}, false, err
 	}
-	a.emit(EventChanged, true)
-	a.notifyUI()
-	return nil
+	return *ac, lookErr != nil, nil
 }
 
-// Activate makes a vault account the current one everywhere: it installs the
-// auth.json into the CLI directory, records the marker, and exports the key
-// for apiKeyHelper consumers.
-func (a *App) Activate(id string) error {
+// SwitchTo activates a saved credential: it becomes the CLI's auth.json, the
+// exported active.key (for apiKeyHelper consumers), and the recorded current.
+func (a *App) SwitchTo(id string) error {
 	raw, err := a.vl.Auth(id)
 	if err != nil {
-		return fmt.Errorf("account %q not found in vault", id)
+		return fmt.Errorf("保管库里没有这个账号：%w", err)
 	}
 	auth, err := creds.Parse(raw)
 	if err != nil {
@@ -217,212 +248,143 @@ func (a *App) Activate(id string) error {
 	if err := settings.WriteActiveKey(auth.APIKey); err != nil {
 		return err
 	}
-	a.emit(EventChanged, true)
-	a.notifyUI()
+	_, _ = settings.EnsureKeyHelper()
 	return nil
 }
 
-// Deactivate removes the active credential (auth.json + exported key).
+// Deactivate removes the CLI credential and the exported key (the vault copy
+// is untouched).
 func (a *App) Deactivate() error {
-	if err := ccdir.Remove(ccdir.AuthFileName); err != nil && !isNotExist(err) {
+	if err := ccdir.Remove(ccdir.AuthFileName); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	_ = a.vl.ClearActive()
 	_ = settings.RemoveActiveKey()
-	a.emit(EventChanged, true)
-	a.notifyUI()
 	return nil
 }
 
-func isNotExist(err error) bool { return errors.Is(err, fs.ErrNotExist) }
-
-// SetNote updates an account's free-form remark.
-func (a *App) SetNote(id, note string) error {
-	if err := a.vl.SetNote(id, note); err != nil {
-		return err
+// DeleteFromVault permanently drops one saved credential. The credential
+// currently installed for the CLI is protected, as is the recorded active one.
+func (a *App) DeleteFromVault(id string) error {
+	st := a.TrayState()
+	if st.Protected(id) {
+		return fmt.Errorf("这个账号正在使用中，请先「停用当前登录」或切换到别的账号再删除")
 	}
-	a.emit(EventChanged, true)
-	return nil
+	return a.vl.Remove(id)
 }
 
-// SetCloseAction configures whether the window X hides to tray or quits.
-func (a *App) SetCloseAction(action string) error {
-	if action != "tray" && action != "quit" {
-		return fmt.Errorf("closeAction must be \"tray\" or \"quit\"")
+// RefreshPlans probes every saved credential through the local proxy (which
+// it starts if needed) and caches the verdict per account.
+func (a *App) RefreshPlans() (string, error) {
+	accounts := a.Accounts()
+	if len(accounts) == 0 {
+		return "", fmt.Errorf("保管库还是空的，先「保存当前登录凭证」")
 	}
-	a.cfg.CloseAction = action
-	if err := settings.Save(a.cfg); err != nil {
-		return err
+	if !a.px.Status().Running {
+		if err := a.px.Start(); err != nil {
+			return "", fmt.Errorf("套餐探测走本地代理，但代理启动失败：%w", err)
+		}
 	}
-	a.notifyUI()
-	return nil
+	base := a.px.BaseURL()
+	models := a.cfg.ProbeModels
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	lines := make([]string, 0, len(accounts))
+	for _, ac := range accounts {
+		raw, err := a.vl.Auth(ac.ID)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("%s：读取失败", displayNameOf(ac.UserName, ac.ID)))
+			continue
+		}
+		auth, err := creds.Parse(raw)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("%s：凭证无效", displayNameOf(ac.UserName, ac.ID)))
+			continue
+		}
+		res, err := a.prober(base).Plan(ctx, auth.APIKey, models)
+		name := displayNameOf(ac.UserName, ac.ID)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("%s：探测失败（%v）", name, err))
+			continue
+		}
+		plan := &vault.PlanInfo{
+			ProbeAt: time.Now(), Allowed: res.Allowed, Denied: res.Denied,
+			QuotaHeaders: res.QuotaHeaders, Blocked: res.Blocked, Reason: res.Reason,
+		}
+		if err := a.vl.PutPlan(ac.ID, plan); err != nil {
+			lines = append(lines, fmt.Sprintf("%s：缓存失败（%v）", name, err))
+			continue
+		}
+		if res.Blocked {
+			lines = append(lines, fmt.Sprintf("%s：⛔ %s", name, res.Reason))
+		} else {
+			lines = append(lines, fmt.Sprintf("%s：可用 %d 个模型（不可用 %d）", name, len(res.Allowed), len(res.Denied)))
+		}
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
-// CloseActionIsTray reports the configured window-X behavior.
-func (a *App) CloseActionIsTray() bool {
+func (a *App) prober(baseURL string) planProber {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.cfg.CloseAction != "quit"
-}
-
-// SetAccountsChangedHook lets main.go refresh the tray menu on any change.
-func (a *App) SetAccountsChangedHook(fn func()) {
-	a.mu.Lock()
-	a.onChanged = fn
-	a.mu.Unlock()
-}
-
-func (a *App) notifyUI() {
-	a.mu.Lock()
-	fn := a.onChanged
-	a.mu.Unlock()
-	if fn != nil {
-		fn()
+	p, ok := a.probers[baseURL]
+	if !ok {
+		p = a.newProber(baseURL)
+		a.probers[baseURL] = p
 	}
+	return p
 }
 
-// Remove deletes an account from the vault (never the active auth.json file).
-func (a *App) Remove(id string) error {
-	if a.vl.ActiveID() != "" && id == a.vl.ActiveID() {
-		return fmt.Errorf("deactivate this account before removing it")
-	}
-	if err := a.vl.Remove(id); err != nil {
-		return err
-	}
-	a.emit(EventChanged, true)
-	a.notifyUI()
-	return nil
-}
+// -------------------------------------------------------------------- proxy
 
-// StartLogin begins the browser sign-in flow for a NEW account. The active
-// account is preserved.
-func (a *App) StartLogin() error {
-	return a.sess.Begin(a.cfg.CLICommand)
-}
+// ProxyRunning reports the child-process state for the tray checkmark.
+func (a *App) ProxyRunning() bool { return a.px.Status().Running }
 
-// AbortLogin cancels an in-progress login.
-func (a *App) AbortLogin() { a.sess.Abort() }
+// ProxyBaseURL is the local endpoint consumers should target.
+func (a *App) ProxyBaseURL() string { return a.px.BaseURL() }
 
-// ------------------------------------------------------------------- proxy
+// StartProxy builds (if needed) and starts the local proxy.
+func (a *App) StartProxy() error { return a.px.Start() }
 
-// ProxyStatus returns the child-process state.
-func (a *App) ProxyStatus() proxy.State { return a.px.Status() }
+// StopProxy stops the proxy this app started (external instances untouched).
+func (a *App) StopProxy() error { return a.px.Stop() }
 
-// StartProxy ensures the binary exists (building if needed) and runs it.
-func (a *App) StartProxy() error {
-	err := a.px.Start()
-	a.notifyUI()
-	return err
-}
-
-// StopProxy terminates the managed child process.
-func (a *App) StopProxy() error {
-	err := a.px.Stop()
-	a.notifyUI()
-	return err
-}
-
-// BuildProxy recompiles the proxy from the repository.
-func (a *App) BuildProxy() error {
-	_, err := a.px.Build()
-	a.emit(EventChanged, true)
-	return err
-}
-
-// OpenDashboard opens the proxy's /admin page in the system browser.
+// OpenDashboard opens the proxy's request-log page in the browser.
 func (a *App) OpenDashboard() {
 	if a.runtime != nil {
 		_ = a.runtime.Browser.OpenURL(a.px.BaseURL() + "/admin")
 	}
 }
 
-// -------------------------------------------------------------------- plans
-
-// RefreshPlan probes a vault account's key against the configured models and
-// caches the result. The local proxy must be running (it is the known-good
-// translation layer).
-func (a *App) RefreshPlan(id string) error {
-	raw, err := a.vl.Auth(id)
-	if err != nil {
-		return fmt.Errorf("account %q not found", id)
+// OpenVaultDir reveals the credential folder in the file manager (handy for
+// renaming or deleting saved accounts by hand).
+func (a *App) OpenVaultDir() error {
+	dir := a.vl.Root()
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
 	}
-	auth, err := creds.Parse(raw)
-	if err != nil {
-		return err
-	}
-	st := a.px.Status()
-	if !st.Running {
-		// The proxy process is the known-good translation layer for
-		// /alpha/generate; start it on demand rather than failing.
-		if err := a.px.Start(); err != nil {
-			return fmt.Errorf("plan checks go through the local proxy, and it failed to start: %w", err)
-		}
-		st = a.px.Status()
-	}
-	p := a.prober(st.BaseURL)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	res, err := p.Plan(ctx, auth.APIKey, a.cfg.ProbeModels)
-	if err != nil {
-		return err
-	}
-	plan := &vault.PlanInfo{ProbeAt: time.Now(), Allowed: res.Allowed, Denied: res.Denied, QuotaHeaders: res.QuotaHeaders, Blocked: res.Blocked, Reason: res.Reason}
-	if err := a.vl.PutPlan(id, plan); err != nil {
-		return err
-	}
-	a.emit(EventChanged, true)
-	return nil
+	return cmd.Start()
 }
 
-// ProxyRunning reports tray menu state.
-func (a *App) ProxyRunning() bool {
-	st := a.px.Status()
-	return st.Running
+// Quit exits the app (stopping a proxy it manages via the shutdown hook).
+func (a *App) Quit() {
+	if a.runtime != nil {
+		a.runtime.Quit()
+	}
 }
 
-func (a *App) prober(baseURL string) *probe.Prober {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	p, ok := a.probers[baseURL]
-	if !ok {
-		p = probe.New(baseURL)
-		a.probers[baseURL] = p
-	}
-	return p
-}
-
-// ------------------------------------------------------------------ settings
-
-// SaveConfig updates host/port/probe settings and rebuilds the proxy manager.
-func (a *App) SaveConfig(cfg settings.Config) error {
-	def := settings.DefaultConfig()
-	def.Merge(cfg) // cfg wins where set
-	a.cfg = def
-	if err := settings.Save(a.cfg); err != nil {
-		return err
-	}
-	root, err := a.cfg.ResolveVaultRoot()
-	if err != nil {
-		return err
-	}
-	vl, err := vault.Open(root)
-	if err != nil {
-		return err
-	}
-	a.vl = vl
-	a.px = proxy.NewManager(a.cfg)
-	a.emit(EventChanged, true)
-	a.notifyUI()
-	return nil
-}
-
-// Catalog returns Command Code's global model list (cached per process).
-func (a *App) Catalog() ([]probe.CatalogEntry, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	c, err := probe.FetchCatalog(ctx, a.cfg.ModelsURL)
-	if err != nil {
-		return nil, err
-	}
-	return c.Models, nil
+// sortedAccounts is Accounts ordered for menu display.
+func (a *App) sortedAccounts() []vault.Account {
+	list := a.Accounts()
+	sort.SliceStable(list, func(i, j int) bool {
+		return displayNameOf(list[i].UserName, list[i].ID) < displayNameOf(list[j].UserName, list[j].ID)
+	})
+	return list
 }

@@ -1,12 +1,17 @@
-// Package proxy manages the local commandcode-proxy child process: it can
-// build the proxy from the fork's repository, start/stop it, and report
-// health. The proxy itself is the unmodified upstream binary; this package
-// only shells it in and out.
+// Package proxy manages the local commandcode-proxy child process.
+//
+// The proxy binary is EMBEDDED in this application (see proxybin/) and
+// extracted to the app-data directory on demand, so a released desktop build
+// is a single self-contained executable: no Go toolchain and no proxy source
+// tree on the target machine. Updating the proxy means rebuilding the desktop
+// app — which is exactly the release flow this app is built for.
 package proxy
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +26,18 @@ import (
 	"commandcode-desktop/internal/settings"
 )
 
+// embeddedBytes holds the proxy binary shipped inside this executable. It is
+// injected by package main (which owns the embed directive over proxybin/),
+// so this package stays free of build-time asset expectations.
+var embeddedBytes []byte
+
+// SetEmbeddedBinary supplies the shipped proxy binary. Passing nil/empty
+// leaves the build without one (a checkout that has not produced it yet).
+func SetEmbeddedBinary(b []byte) { embeddedBytes = b }
+
+// BinaryName is the proxy executable's file name on this platform.
+func BinaryName() string { return binaryName() }
+
 // State is the UI-facing status of the local proxy.
 type State struct {
 	Running      bool   `json:"running"`
@@ -29,8 +46,6 @@ type State struct {
 	Version      string `json:"version"`
 	BinaryPath   string `json:"binaryPath"`
 	BinaryExists bool   `json:"binaryExists"`
-	SourceRoot   string `json:"sourceRoot"`
-	SourceFound  bool   `json:"sourceFound"`
 	PID          int    `json:"pid"`
 	LastError    string `json:"lastError"`
 }
@@ -72,10 +87,9 @@ func (m *Manager) Status() State {
 	cfg, _ := settings.Load()
 	m.refreshHealthLocked()
 
-	m.state.BinaryPath = m.resolveBinaryLocked(cfg)
-	m.state.BinaryExists = m.state.BinaryPath != ""
-	root, ok := findRepoRoot(cfg)
-	m.state.SourceRoot, m.state.SourceFound = root, ok
+	bin := existingManagedBinary(cfg)
+	m.state.BinaryPath = bin
+	m.state.BinaryExists = bin != ""
 	m.state.PID = 0
 	if m.cmd != nil && m.cmd.Process != nil && m.state.Running {
 		m.state.PID = m.cmd.Process.Pid
@@ -108,36 +122,103 @@ func (m *Manager) refreshHealthLocked() {
 	m.state.Version = version
 }
 
-// resolveBinaryLocked picks the binary: explicit config path > managed copy >
-// repo build output. Returns "" when none exists yet.
-func (m *Manager) resolveBinaryLocked(cfg settings.Config) string {
-	if cfg.ProxyBinary != "" && fileExists(cfg.ProxyBinary) {
-		return cfg.ProxyBinary
+// binaryName is the file name of the proxy executable on this platform.
+func binaryName() string {
+	if runtime.GOOS == "windows" {
+		return "commandcode-proxy.exe"
 	}
-	if p, err := managedBinaryPath(); err == nil && fileExists(p) {
-		return p
-	}
-	if root, ok := findRepoRoot(cfg); ok {
-		for _, name := range []string{"commandcode-proxy.exe", "commandcode-proxy"} {
-			if p := filepath.Join(root, name); fileExists(p) {
-				return p
-			}
-		}
-	}
-	return ""
+	return "commandcode-proxy"
 }
 
-// managedBinaryPath is the app's own build output under the app-data dir.
-func managedBinaryPath() (string, error) {
+// ManagedBinaryPath is where the proxy lives inside the app-data directory.
+func ManagedBinaryPath() (string, error) {
 	d, err := settings.Dir()
 	if err != nil {
 		return "", err
 	}
-	name := "commandcode-proxy"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
+	return filepath.Join(d, binaryName()), nil
+}
+
+// existingManagedBinary returns a runnable binary without extracting
+// anything: an explicit override wins, else the previously extracted copy.
+func existingManagedBinary(cfg settings.Config) string {
+	if cfg.ProxyBinary != "" && fileExists(cfg.ProxyBinary) {
+		return cfg.ProxyBinary
 	}
-	return filepath.Join(d, name), nil
+	if p, err := ManagedBinaryPath(); err == nil && fileExists(p) {
+		return p
+	}
+	return ""
+}
+
+// EmbeddedBinary returns the proxy bytes shipped inside this executable.
+func EmbeddedBinary() ([]byte, error) {
+	if len(embeddedBytes) == 0 {
+		return nil, errors.New("这个构建里没有嵌入代理二进制")
+	}
+	return embeddedBytes, nil
+}
+
+// ExtractEmbedded writes the embedded proxy into dir, replacing an older copy
+// by content digest. A binary that is currently running cannot be replaced on
+// Windows; in that case the existing file is reused (the update simply lands
+// on the next launch).
+func ExtractEmbedded(dir string) (string, error) {
+	data, err := EmbeddedBinary()
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(dir, binaryName())
+	digestPath := target + ".sha256"
+	sum := sha256.Sum256(data)
+	want := hex.EncodeToString(sum[:])
+
+	if have, err := os.ReadFile(digestPath); err == nil && strings.TrimSpace(string(have)) == want && fileExists(target) {
+		return target, nil // already current
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := writeFileAtomic(target, data, 0o755); err != nil {
+		if fileExists(target) {
+			return target, nil // locked by a running proxy: keep using it
+		}
+		return "", err
+	}
+	_ = os.WriteFile(digestPath, []byte(want), 0o644)
+	return target, nil
+}
+
+// EnsureExtracted extracts the embedded proxy into the app-data dir (a no-op
+// once the copy matches the embedded digest) and returns its path.
+func EnsureExtracted() (string, error) {
+	d, err := settings.Dir()
+	if err != nil {
+		return "", err
+	}
+	return ExtractEmbedded(d)
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".proxybin-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(name, mode); err != nil {
+			return err
+		}
+	}
+	return os.Rename(name, path)
 }
 
 func fileExists(p string) bool {
@@ -145,81 +226,9 @@ func fileExists(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// findRepoRoot locates the commandcode-proxy-go source tree: explicit config,
-// else walk up from the executable (dev runs put the binary under desktop/bin).
-func findRepoRoot(cfg settings.Config) (string, bool) {
-	if cfg.ProxySource != "" && looksLikeRepo(cfg.ProxySource) {
-		return cfg.ProxySource, true
-	}
-	if exe, err := os.Executable(); err == nil {
-		for d := filepath.Dir(exe); ; {
-			if looksLikeRepo(d) {
-				return d, true
-			}
-			parent := filepath.Dir(d)
-			if parent == d {
-				break
-			}
-			d = parent
-		}
-	}
-	return "", false
-}
-
-func looksLikeRepo(dir string) bool {
-	if !fileExists(filepath.Join(dir, "go.mod")) || !fileExists(filepath.Join(dir, "cmd", "commandcode-proxy", "main.go")) {
-		return false
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
-	return err == nil && strings.Contains(string(data), "commandcode-proxy")
-}
-
-// Build compiles the proxy from the source repo into the managed path.
-func (m *Manager) Build() (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cfg, _ := settings.Load()
-	return m.buildLocked(cfg)
-}
-
-// buildLocked performs the build; callers hold m.mu.
-func (m *Manager) buildLocked(cfg settings.Config) (string, error) {
-	root, ok := findRepoRoot(cfg)
-	if !ok {
-		return "", fmt.Errorf("proxy source repo not found — set its path in settings")
-	}
-	out, err := managedBinaryPath()
-	if err != nil {
-		return "", err
-	}
-	goBin, err := exec.LookPath("go")
-	if err != nil {
-		return "", fmt.Errorf("go toolchain not on PATH: %w", err)
-	}
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", goBin, "build", "-o", out, "./cmd/commandcode-proxy")
-	} else {
-		cmd = exec.Command(goBin, "build", "-o", out, "./cmd/commandcode-proxy")
-	}
-	cmd.Dir = root
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = hideWindow()
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		m.state.LastError = truncate(stderr.String(), 600)
-		return "", fmt.Errorf("build failed: %v", err)
-	}
-	m.state.BinaryPath = out
-	m.state.LastError = ""
-	return out, nil
-}
-
-// Start launches the proxy child process. It builds the managed binary when
-// none exists. An external proxy already answering on the port is reported by
-// Status as External, not killed.
+// Start launches the proxy child process, extracting the embedded binary
+// first when needed. An external proxy already answering on the port is
+// reported by Status as External, not killed.
 func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -227,14 +236,30 @@ func (m *Manager) Start() error {
 		return nil // already ours
 	}
 	cfg, _ := settings.Load()
-	bin := m.resolveBinaryLocked(cfg)
-	if bin == "" {
-		out, err := m.buildLocked(cfg)
-		if err != nil {
+
+	bin := existingManagedBinary(cfg)
+	if cfg.ProxyBinary == "" {
+		// Refresh the managed copy from the embedded binary (a no-op while the
+		// digest matches). If extraction fails but an older copy is on disk,
+		// that copy is still usable — never fail a start over a stale binary.
+		p, err := EnsureExtracted()
+		switch {
+		case err == nil:
+			bin = p
+		case bin != "":
+			m.state.LastError = err.Error()
+		default:
+			err = fmt.Errorf("无法释放内置代理二进制（%v）—— 请重新打包桌面程序，或在配置里设置 proxyBinary 指向一个代理可执行文件", err)
+			m.state.LastError = err.Error()
 			return err
 		}
-		bin = out
 	}
+	if bin == "" {
+		err := errors.New("没有可用的代理二进制：内置资源缺失，且配置的 proxyBinary 不存在")
+		m.state.LastError = err.Error()
+		return err
+	}
+
 	host, port := "127.0.0.1", "8787"
 	if cfg.ProxyHost != "" {
 		host = cfg.ProxyHost
@@ -271,7 +296,7 @@ func (m *Manager) Start() error {
 			return nil
 		}
 	}
-	return fmt.Errorf("proxy started but /health never answered on %s", m.state.BaseURL)
+	return fmt.Errorf("代理已启动但 %s/health 无响应", m.state.BaseURL)
 }
 
 // Stop terminates the managed child (external proxies are left alone).
@@ -285,12 +310,4 @@ func (m *Manager) Stop() error {
 	m.cmd = nil
 	m.refreshHealthLocked()
 	return err
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

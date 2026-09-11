@@ -24,10 +24,6 @@ type Config struct {
 	// from ProxySource when needed.
 	ProxyBinary string `json:"proxyBinary"`
 
-	// ProxySource is the commandcode-proxy-go repository root, used to build
-	// ProxyBinary with `go build ./cmd/commandcode-proxy`.
-	ProxySource string `json:"proxySource"`
-
 	// VaultRoot overrides the credential archive location.
 	VaultRoot string `json:"vaultRoot"`
 
@@ -37,13 +33,6 @@ type Config struct {
 	// ProbeModels are model ids exercised against the account key to infer
 	// plan availability.
 	ProbeModels []string `json:"probeModels"`
-
-	// CLICommand overrides the login executable name.
-	CLICommand string `json:"cliCommand"`
-
-	// CloseAction: what clicking the window X does — "tray" hides to the
-	// system tray (default), "quit" exits the app.
-	CloseAction string `json:"closeAction"`
 }
 
 // DefaultConfig returns sane defaults: local proxy on 8787 (the README
@@ -57,9 +46,7 @@ func DefaultConfig() Config {
 			"deepseek/deepseek-v4-flash",
 			"claude-sonnet-5",
 		},
-		ModelsURL:   "https://api.commandcode.ai/provider/v1/models",
-		CLICommand:  "", // empty = platform default (cmdc on Windows, cmd elsewhere)
-		CloseAction: "tray",
+		ModelsURL: "https://api.commandcode.ai/provider/v1/models",
 	}
 }
 
@@ -74,9 +61,6 @@ func (c *Config) Merge(d Config) {
 	if c.ProxyBinary == "" {
 		c.ProxyBinary = d.ProxyBinary
 	}
-	if c.ProxySource == "" {
-		c.ProxySource = d.ProxySource
-	}
 	if c.VaultRoot == "" {
 		c.VaultRoot = d.VaultRoot
 	}
@@ -85,12 +69,6 @@ func (c *Config) Merge(d Config) {
 	}
 	if len(c.ProbeModels) == 0 {
 		c.ProbeModels = d.ProbeModels
-	}
-	if c.CLICommand == "" {
-		c.CLICommand = d.CLICommand
-	}
-	if c.CloseAction == "" {
-		c.CloseAction = d.CloseAction
 	}
 }
 
