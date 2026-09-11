@@ -2,17 +2,26 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"commandcode-desktop/internal/applog"
 	"commandcode-desktop/internal/ccdir"
 	"commandcode-desktop/internal/creds"
+	"commandcode-desktop/internal/gateway"
 	"commandcode-desktop/internal/probe"
 	"commandcode-desktop/internal/proxy"
 	"commandcode-desktop/internal/settings"
@@ -47,13 +56,14 @@ func (f *fakeNotifier) Ask(title, msg, _ string, onYes func()) {
 
 // fakeProxy stands in for the proxy manager: no process is ever started.
 type fakeProxy struct {
-	running      bool
-	external     bool
-	binaryExists bool
-	base         string
-	starts       int
-	stops        int
-	startErr     error
+	running        bool
+	external       bool
+	binaryExists   bool
+	base           string
+	baseAfterStart string
+	starts         int
+	stops          int
+	startErr       error
 }
 
 func (p *fakeProxy) Status() proxy.State {
@@ -71,6 +81,9 @@ func (p *fakeProxy) Start() error {
 	}
 	p.starts++
 	p.running = true
+	if p.baseAfterStart != "" {
+		p.base = p.baseAfterStart // simulate the real proxy moving ports
+	}
 	return nil
 }
 
@@ -109,6 +122,7 @@ func (p *fakeProber) Plan(_ context.Context, _ string, models []string) (*probe.
 type testEnv struct {
 	app     *App
 	credDir string
+	logDir  string
 	px      *fakeProxy
 	pr      *fakeProber
 	n       *fakeNotifier
@@ -127,12 +141,19 @@ func newEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Real daily-file logging into an isolated directory: assertions can read
+	// what the app recorded, and the app never writes to stderr in tests.
 	env := &testEnv{
 		credDir: credDir,
+		logDir:  filepath.Join(home, "logs"),
 		px:      &fakeProxy{running: true},
 		pr:      &fakeProber{},
 		n:       &fakeNotifier{},
 	}
+	if err := applog.Init(env.logDir, "debug", 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(applog.Close)
 	env.app = &App{
 		cfg:       settings.Config{ProbeModels: []string{"m1", "m2"}},
 		vl:        vl,
@@ -140,6 +161,18 @@ func newEnv(t *testing.T) *testEnv {
 		probers:   map[string]planProber{},
 		newProber: func(string) planProber { return env.pr },
 	}
+	// The gateway is real but not started, and resolves the proxy address the
+	// same way the app does (per request, from the effective proxy address).
+	gw, err := gateway.New(func() string { return env.px.BaseURL() }, env.app.activeKey, func() error {
+		if env.px.Status().Running {
+			return nil
+		}
+		return env.px.Start()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.app.gw = gw
 	return env
 }
 
@@ -757,6 +790,10 @@ func TestMenuGolden(t *testing.T) {
 		"✓ [•] 本地代理：运行中（http://127.0.0.1:8787）",
 		"✓ 打开仪表盘 /admin",
 		"---",
+		"✓ IDE 网关：已停止（点击启动）",
+		"· 复制网关接入信息",
+		"---",
+		"✓ 打开日志目录",
 		"✓ 打开保管库目录",
 		"✓ 退出",
 	}
@@ -875,5 +912,388 @@ func TestTooltipFollowsExternalLogin(t *testing.T) {
 	}
 	if indexOf(tr.events, "setMenu") >= 0 {
 		t.Fatalf("the tooltip tick must not touch the menu: %v", tr.events)
+	}
+}
+
+// ------------------------------------------------------------------ gateway
+
+// gatewaySpy is a stand-in for the local proxy: it records the credential it
+// received, which is how these tests observe what the tray exported.
+func gatewaySpy(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	seen := []string{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization")+"|"+r.Header.Get("X-Api-Key"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+// attachGateway points the app's gateway at a test upstream and starts it.
+func (e *testEnv) attachGateway(t *testing.T, upstream string) *gateway.Gateway {
+	t.Helper()
+	gw, err := gateway.New(func() string { return upstream }, e.app.activeKey, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.app.gw = gw
+	if err := e.app.StartGateway(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.app.StopGateway() })
+	return gw
+}
+
+func postThrough(t *testing.T, base, path string, headers map[string]string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(`{"model":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+// TestGatewayServesTheAccountTheTrayHasActive is the user-facing promise: an
+// editor configured against the gateway (with any placeholder key) follows the
+// tray, including after a switch.
+func TestGatewayServesTheAccountTheTrayHasActive(t *testing.T) {
+	env := newEnv(t)
+	up, seen := gatewaySpy(t)
+
+	// Logged in as alice → gateway must inject alice's key.
+	env.loginAs(t, "u-a", "alice", "user_alice_key_aaaaaaaaa")
+	gw := env.attachGateway(t, up.URL)
+
+	postThrough(t, gw.Status().Addr, "/v1/messages", map[string]string{"X-Api-Key": "sk-placeholder"})
+	// Switching to bob (what the tray does) must be picked up immediately.
+	env.loginAs(t, "u-b", "bob", "user_bob_key_bbbbbbbbbbb")
+	postThrough(t, gw.Status().Addr, "/v1/chat/completions", map[string]string{"Authorization": "Bearer sk-placeholder"})
+
+	want := []string{
+		"Bearer user_alice_key_aaaaaaaaa|user_alice_key_aaaaaaaaa",
+		"Bearer user_bob_key_bbbbbbbbbbb|user_bob_key_bbbbbbbbbbb",
+	}
+	if len(*seen) != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (%v)", len(*seen), *seen)
+	}
+	for i := range want {
+		if (*seen)[i] != want[i] {
+			t.Fatalf("call %d credential = %q, want %q", i, (*seen)[i], want[i])
+		}
+	}
+}
+
+// TestGatewayFallsBackToExportedKey covers the case where auth.json is gone
+// (deactivated) but an account was exported for consumers.
+func TestGatewayFallsBackToExportedKey(t *testing.T) {
+	env := newEnv(t)
+	up, seen := gatewaySpy(t)
+	if err := settings.WriteActiveKey("user_exported_key_9999"); err != nil {
+		t.Fatal(err)
+	}
+	gw := env.attachGateway(t, up.URL)
+
+	postThrough(t, gw.Status().Addr, "/v1/messages", nil)
+	if len(*seen) != 1 || !strings.Contains((*seen)[0], "user_exported_key_9999") {
+		t.Fatalf("credential = %v", *seen)
+	}
+}
+
+// TestGatewayWithoutAccountGuidesTheUser: no credential anywhere must produce
+// a clear 401 (and never reach the proxy).
+func TestGatewayWithoutAccountGuidesTheUser(t *testing.T) {
+	env := newEnv(t)
+	up, seen := gatewaySpy(t)
+	gw := env.attachGateway(t, up.URL)
+
+	resp := postThrough(t, gw.Status().Addr, "/v1/messages", map[string]string{"Authorization": "Bearer sk-placeholder"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "切换") || !strings.Contains(string(body), "cmdc login") {
+		t.Fatalf("error body should tell the user what to do: %s", body)
+	}
+	if len(*seen) != 0 {
+		t.Fatal("the proxy must not be called without an account")
+	}
+}
+
+func TestGatewayInfoTextHasBothBaseURLs(t *testing.T) {
+	env := newEnv(t)
+	gw := env.attachGateway(t, "http://127.0.0.1:1")
+	text := env.app.GatewayInfoText()
+	if !strings.Contains(text, gw.Status().Addr) {
+		t.Fatalf("info text missing the address: %q", text)
+	}
+	if !strings.Contains(text, "/v1") || !strings.Contains(text, "deepseek/") {
+		t.Fatalf("info text should name both surfaces and a model ID: %q", text)
+	}
+}
+
+func TestTrayTogglesGatewayAndRemembers(t *testing.T) {
+	env := newEnv(t)
+	up, _ := gatewaySpy(t)
+	_ = up
+	env.attachGateway(t, "http://127.0.0.1:1")
+	tc := env.tray()
+	_ = tc
+
+	// Started by attachGateway: stopping must persist "off".
+	if !env.app.GatewayStatus().Running {
+		t.Fatal("gateway should be running")
+	}
+	tc.actToggleGateway()
+	if env.app.GatewayStatus().Running {
+		t.Fatal("gateway still running after stop")
+	}
+	if env.app.GatewayAutoOn() {
+		t.Fatal("stopping should persist GatewayAuto=off")
+	}
+
+	// Starting again persists "on" and notifies.
+	tc.actToggleGateway()
+	if !env.app.GatewayStatus().Running {
+		t.Fatal("gateway did not start")
+	}
+	if !env.app.GatewayAutoOn() {
+		t.Fatal("starting should persist GatewayAuto=on")
+	}
+	if len(env.n.fails) != 0 {
+		t.Fatalf("unexpected failures: %v", env.n.fails)
+	}
+	if len(env.n.infos) == 0 {
+		t.Fatal("want a notification on start")
+	}
+}
+
+func TestTrayGatewayStartFailureIsReported(t *testing.T) {
+	env := newEnv(t)
+	// Occupy a port and point the gateway at it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	env.app.cfg.GatewayHost, env.app.cfg.GatewayPort = "127.0.0.1", port
+
+	env.tray().actToggleGateway()
+	if len(env.n.fails) != 1 || !strings.Contains(env.n.fails[0], "IDE 网关") {
+		t.Fatalf("want a gateway start failure notification, got %v", env.n.fails)
+	}
+	if env.app.GatewayStatus().Running {
+		t.Fatal("gateway must not report running")
+	}
+}
+
+func TestMenuShowsGatewayState(t *testing.T) {
+	env := newEnv(t)
+	menu := env.tray().buildMenu()
+	if item := menuItemByLabel(t, menu, "IDE 网关：已停止（点击启动）"); item == nil || !item.Enabled() {
+		t.Fatalf("stopped gateway entry missing: %v", menuLabels(t, menu))
+	}
+	if item := menuItemByLabel(t, menu, "复制网关接入信息"); item == nil || item.Enabled() {
+		t.Fatal("copy entry must be disabled while the gateway is stopped")
+	}
+
+	env.attachGateway(t, "http://127.0.0.1:1")
+	addr := env.app.GatewayStatus().Addr
+	menu = env.tray().buildMenu()
+	if item := menuItemByLabel(t, menu, "IDE 网关：运行中（"+addr+"）"); item == nil || !item.Checked() {
+		t.Fatalf("running gateway entry missing/not checked: %v", menuLabels(t, menu))
+	}
+	if item := menuItemByLabel(t, menu, "复制网关接入信息"); item == nil || !item.Enabled() {
+		t.Fatal("copy entry should be enabled while the gateway runs")
+	}
+}
+
+// ------------------------------------------------------------------ logging
+
+// readAppLog returns everything written to today's log file.
+func (e *testEnv) readAppLog(t *testing.T) string {
+	t.Helper()
+	files := applog.Files()
+	if len(files) == 0 {
+		t.Fatal("no log file was written")
+	}
+	b, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestFailuresAreLogged is the reason logging exists: every failure path goes
+// through the notifier, so wrapping it must record the error with context.
+func TestFailuresAreLogged(t *testing.T) {
+	env := newEnv(t)
+	fake := &fakeNotifier{}
+	n := loggingNotifier{inner: fake}
+
+	n.Fail("切换失败", errors.New("保管库里没有这个账号"))
+
+	log := env.readAppLog(t)
+	if !strings.Contains(log, "[ERROR] notify: 保管库里没有这个账号") || !strings.Contains(log, "context=切换失败") {
+		t.Fatalf("failure not logged with context:\n%s", log)
+	}
+
+	// A confirmation question is recorded too (it precedes a destructive act).
+	n.Ask("删除保管库账号", "只删除保存的副本。", "删除", func() {})
+	if log := env.readAppLog(t); !strings.Contains(log, "询问：删除保管库账号") {
+		t.Fatalf("Ask not logged:\n%s", log)
+	}
+}
+
+// TestSwitchIsLoggedWithoutTheSecret is a safety invariant: account switches
+// are auditable, but the API key itself must never reach the log.
+func TestSwitchIsLoggedWithoutTheSecret(t *testing.T) {
+	env := newEnv(t)
+	alice, _ := env.saveBoth(t)
+	if err := env.app.SwitchTo(alice.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	log := env.readAppLog(t)
+	if !strings.Contains(log, "已切换账号") || !strings.Contains(log, "account=alice") {
+		t.Fatalf("switch not logged:\n%s", log)
+	}
+	if strings.Contains(log, "user_alice_key_aaaaaaaaa") || strings.Contains(log, "user_bob_key_bbbbbbbbbbb") {
+		t.Fatalf("log leaked an API key:\n%s", log)
+	}
+	if !strings.Contains(log, "maskedKey=user_ali…aaaa") {
+		t.Fatalf("log should carry only the masked key:\n%s", log)
+	}
+
+	// Saving and deactivating are auditable too.
+	env.tray().actDeactivate()
+	log = env.readAppLog(t)
+	if !strings.Contains(log, "已保存登录凭证") || !strings.Contains(log, "已停用当前登录") {
+		t.Fatalf("save/deactivate not logged:\n%s", log)
+	}
+}
+
+// TestMenuOffersLogDirectory only when logging is actually available.
+func TestMenuOffersLogDirectory(t *testing.T) {
+	env := newEnv(t)
+	item := menuItemByLabel(t, env.tray().buildMenu(), "打开日志目录")
+	if item == nil || !item.Enabled() {
+		t.Fatal("log directory entry should be available once logging is on")
+	}
+}
+
+// ------------------------------------------------------------ service ordering
+
+// TestStartServicesStartsProxyFirstThenGateway: the gateway must only come up
+// once a live proxy address exists, and it must target the port that proxy is
+// actually on — including a fallback port.
+func TestStartServicesStartsProxyFirstThenGateway(t *testing.T) {
+	env := newEnv(t)
+	env.px.running = false
+	env.px.base = "http://127.0.0.1:8787"
+	env.px.baseAfterStart = "http://127.0.0.1:54322" // the configured port was busy
+
+	lines, err := env.app.StartServices()
+	if err != nil {
+		t.Fatalf("StartServices: %v", err)
+	}
+	defer env.app.StopGateway()
+
+	if env.px.starts != 1 {
+		t.Fatalf("proxy starts = %d, want 1", env.px.starts)
+	}
+	if !env.app.ProxyRunning() {
+		t.Fatal("proxy should be running")
+	}
+	if !env.app.GatewayStatus().Running {
+		t.Fatal("gateway should be running")
+	}
+	if got := env.app.GatewayStatus().Addr; !strings.HasPrefix(got, "http://127.0.0.1:") {
+		t.Fatalf("gateway addr = %q", got)
+	}
+	// The gateway must point at the port the proxy actually landed on.
+	if got := env.app.TrayState().GatewayTarget; got != env.px.baseAfterStart {
+		t.Fatalf("gateway target = %q, want %q", got, env.px.baseAfterStart)
+	}
+	if len(lines) != 2 || !strings.Contains(lines[0], "本地代理") || !strings.Contains(lines[1], "IDE 网关") {
+		t.Fatalf("startup summary out of order: %v", lines)
+	}
+	if !strings.Contains(lines[1], env.px.baseAfterStart) {
+		t.Fatalf("summary should name the proxy the gateway targets: %v", lines)
+	}
+}
+
+// TestGatewayRefusesToStartWithoutProxy: no reachable proxy, no gateway.
+func TestGatewayRefusesToStartWithoutProxy(t *testing.T) {
+	env := newEnv(t)
+	env.px.running = false
+	env.px.startErr = errors.New("端口全被占用了")
+
+	err := env.app.StartGateway()
+	if err == nil {
+		t.Fatal("StartGateway must fail when the proxy cannot start")
+	}
+	if !strings.Contains(err.Error(), "本地代理") {
+		t.Fatalf("error should blame the proxy: %v", err)
+	}
+	if env.app.GatewayStatus().Running {
+		t.Fatal("gateway must not be running")
+	}
+	// Startup aborts at the proxy and reports it.
+	lines, serr := env.app.StartServices()
+	if serr == nil || len(lines) != 0 {
+		t.Fatalf("StartServices should fail at the proxy, got lines=%v err=%v", lines, serr)
+	}
+}
+
+// TestProxyToggleRemembersAutoStart mirrors the gateway switch behaviour.
+func TestProxyToggleRemembersAutoStart(t *testing.T) {
+	env := newEnv(t)
+	tc := env.tray()
+	if !env.app.ProxyAutoOn() {
+		t.Fatal("proxy auto-start should default to on")
+	}
+	env.px.running = true
+	tc.actToggleProxy()
+	if env.app.ProxyRunning() || env.app.ProxyAutoOn() {
+		t.Fatal("stopping the proxy should persist ProxyAuto=off")
+	}
+	tc.actToggleProxy()
+	if !env.app.ProxyRunning() || !env.app.ProxyAutoOn() {
+		t.Fatal("starting the proxy should persist ProxyAuto=on")
+	}
+	if len(env.n.fails) != 0 {
+		t.Fatalf("unexpected failures: %v", env.n.fails)
+	}
+}
+
+// TestGatewayUsesProxyPortWhenDefaultsApply: with both services auto-on, the
+// end state is a running pair whose ports agree.
+func TestGatewayUsesProxyPortWhenDefaultsApply(t *testing.T) {
+	env := newEnv(t)
+	env.px.running = false
+	if _, err := env.app.StartServices(); err != nil {
+		t.Fatal(err)
+	}
+	defer env.app.StopGateway()
+	if got, want := env.app.GatewayStatus().Addr, "http://127.0.0.1:0"; got == want {
+		t.Fatalf("gateway address not reported: %q", got)
+	}
+	if env.app.TrayState().GatewayTarget != env.px.BaseURL() {
+		t.Fatalf("gateway target %q != proxy %q", env.app.TrayState().GatewayTarget, env.px.BaseURL())
 	}
 }

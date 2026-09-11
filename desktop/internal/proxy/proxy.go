@@ -14,15 +14,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"commandcode-desktop/internal/applog"
 	"commandcode-desktop/internal/settings"
 )
 
@@ -78,6 +81,46 @@ func (m *Manager) BaseURL() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.state.BaseURL
+}
+
+// canBind reports whether host:port is free right now.
+func canBind(host string, port int) bool {
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
+// pickPort returns the port to run the proxy on, falling back to an OS-chosen
+// free one when the configured port is taken. The second result reports the
+// fallback so callers can log/announce it.
+func pickPort(host string, want int) (int, bool) {
+	if want <= 0 {
+		want = 8787
+	}
+	if canBind(host, want) {
+		return want, false
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return want, false // let the child fail loudly rather than guess
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port, true
+}
+
+// healthOn reports whether a proxy answers /health at the given base URL.
+func (m *Manager) healthOn(baseURL string) bool {
+	resp, err := m.client.Get(baseURL + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	return resp.StatusCode == http.StatusOK
 }
 
 // Status refreshes health + binary facts and returns the state.
@@ -181,11 +224,16 @@ func ExtractEmbedded(dir string) (string, error) {
 	}
 	if err := writeFileAtomic(target, data, 0o755); err != nil {
 		if fileExists(target) {
-			return target, nil // locked by a running proxy: keep using it
+			// Locked by a running proxy: keep using the older copy and let the
+			// next launch pick the update up.
+			applog.Warn("proxy", "内置代理更新失败（文件被占用），继续使用现有副本", "err", err.Error(), "path", target)
+			return target, nil
 		}
+		applog.Error("proxy", err, "stage", "extract", "path", target)
 		return "", err
 	}
 	_ = os.WriteFile(digestPath, []byte(want), 0o644)
+	applog.Info("proxy", "已释放内置代理二进制", "path", target, "bytes", len(data))
 	return target, nil
 }
 
@@ -260,35 +308,57 @@ func (m *Manager) Start() error {
 		return err
 	}
 
-	host, port := "127.0.0.1", "8787"
+	host, wantPort := "127.0.0.1", 8787
 	if cfg.ProxyHost != "" {
 		host = cfg.ProxyHost
 	}
 	if cfg.ProxyPort != 0 {
-		port = fmt.Sprint(cfg.ProxyPort)
+		wantPort = cfg.ProxyPort
 	}
+	// Someone (another instance, or the user's own proxy) already serves the
+	// configured port: use it as-is instead of starting a second process.
+	configured := fmt.Sprintf("http://%s:%d", host, wantPort)
+	if m.healthOn(configured) {
+		m.state.BaseURL = configured
+		applog.Info("proxy", "配置端口上已有可用代理，直接复用", "addr", configured)
+		return nil
+	}
+	port, fellBack := pickPort(host, wantPort)
+	m.state.BaseURL = fmt.Sprintf("http://%s:%d", host, port)
+	if fellBack {
+		applog.Warn("proxy", "配置端口被占用，改用空闲端口启动",
+			"wanted", wantPort, "using", port, "addr", m.state.BaseURL)
+	}
+
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(),
 		"COMMANDCODE_PROXY_HOST="+host,
-		"COMMANDCODE_PROXY_PORT="+port,
+		"COMMANDCODE_PROXY_PORT="+strconv.Itoa(port),
 	)
 	if runtime.GOOS == "windows" {
 		cmd.SysProcAttr = hideWindow()
 	}
-	if d, err := settings.Dir(); err == nil {
-		if f, err := os.OpenFile(filepath.Join(d, "proxy.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-			cmd.Stdout = f
-			cmd.Stderr = f
-		}
+	if f, err := os.OpenFile(childLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		cmd.Stdout = f
+		cmd.Stderr = f
 	}
 	if err := cmd.Start(); err != nil {
 		m.state.LastError = err.Error()
+		applog.Error("proxy", err, "stage", "start", "bin", bin)
 		return err
 	}
 	m.cmd = cmd
 	m.state.BinaryPath = bin
 	m.state.LastError = ""
-	go func() { _ = cmd.Wait() }()
+	applog.Info("proxy", "已启动代理子进程", "bin", bin, "pid", cmd.Process.Pid, "addr", m.state.BaseURL)
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			applog.Warn("proxy", "代理子进程退出", "pid", cmd.Process.Pid, "err", err.Error())
+		} else {
+			applog.Info("proxy", "代理子进程正常退出", "pid", cmd.Process.Pid)
+		}
+	}()
 	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
 		m.refreshHealthLocked()
@@ -296,7 +366,22 @@ func (m *Manager) Start() error {
 			return nil
 		}
 	}
-	return fmt.Errorf("代理已启动但 %s/health 无响应", m.state.BaseURL)
+	err := fmt.Errorf("代理已启动但 %s/health 无响应", m.state.BaseURL)
+	applog.Error("proxy", err, "stage", "health")
+	return err
+}
+
+// childLogPath is where the proxy's own output goes: the daily-log folder when
+// available (kept as one continuous file, since the proxy writes its own
+// structured lines), else the app-data directory.
+func childLogPath() string {
+	if dir := applog.Path(); dir != "" {
+		return filepath.Join(dir, "commandcode-proxy.log")
+	}
+	if d, err := settings.Dir(); err == nil {
+		return filepath.Join(d, "proxy.log")
+	}
+	return filepath.Join(os.TempDir(), "commandcode-proxy.log")
 }
 
 // Stop terminates the managed child (external proxies are left alone).
@@ -307,7 +392,13 @@ func (m *Manager) Stop() error {
 		return nil
 	}
 	err := m.cmd.Process.Kill()
+	pid := m.cmd.Process.Pid
 	m.cmd = nil
 	m.refreshHealthLocked()
+	if err != nil {
+		applog.Warn("proxy", "停止代理子进程失败", "pid", pid, "err", err.Error())
+	} else {
+		applog.Info("proxy", "已停止代理子进程", "pid", pid)
+	}
 	return err
 }

@@ -30,6 +30,23 @@ type Config struct {
 	// ModelsURL is Command Code's global model catalog endpoint.
 	ModelsURL string `json:"modelsURL"`
 
+	// GatewayHost/GatewayPort is the loopback address of the credential
+	// injecting gateway that editors point their base URL at. The port is
+	// deliberately uncommon and fixed: editors remember it, so it must not
+	// drift (the proxy behind it may fall back to another port freely).
+	GatewayHost string `json:"gatewayHost"`
+	GatewayPort int    `json:"gatewayPort"`
+
+	// ProxyAuto/GatewayAuto are "on" (default) to start that service with the
+	// app, "off" to leave it stopped until asked from the tray.
+	ProxyAuto   string `json:"proxyAuto"`
+	GatewayAuto string `json:"gatewayAuto"`
+
+	// LogLevel is the minimum level written to the daily log file
+	// (debug, info, warn, error). LogKeepDays prunes older daily files.
+	LogLevel    string `json:"logLevel"`
+	LogKeepDays int    `json:"logKeepDays"`
+
 	// ProbeModels are model ids exercised against the account key to infer
 	// plan availability.
 	ProbeModels []string `json:"probeModels"`
@@ -46,7 +63,13 @@ func DefaultConfig() Config {
 			"deepseek/deepseek-v4-flash",
 			"claude-sonnet-5",
 		},
-		ModelsURL: "https://api.commandcode.ai/provider/v1/models",
+		ModelsURL:   "https://api.commandcode.ai/provider/v1/models",
+		GatewayHost: "127.0.0.1",
+		GatewayPort: 54321,
+		ProxyAuto:   "on",
+		GatewayAuto: "on",
+		LogLevel:    "info",
+		LogKeepDays: 14,
 	}
 }
 
@@ -66,6 +89,24 @@ func (c *Config) Merge(d Config) {
 	}
 	if c.ModelsURL == "" {
 		c.ModelsURL = d.ModelsURL
+	}
+	if c.GatewayHost == "" {
+		c.GatewayHost = d.GatewayHost
+	}
+	if c.GatewayPort == 0 {
+		c.GatewayPort = d.GatewayPort
+	}
+	if c.ProxyAuto == "" {
+		c.ProxyAuto = d.ProxyAuto
+	}
+	if c.GatewayAuto == "" {
+		c.GatewayAuto = d.GatewayAuto
+	}
+	if c.LogLevel == "" {
+		c.LogLevel = d.LogLevel
+	}
+	if c.LogKeepDays == 0 {
+		c.LogKeepDays = d.LogKeepDays
 	}
 	if len(c.ProbeModels) == 0 {
 		c.ProbeModels = d.ProbeModels
@@ -91,6 +132,11 @@ func Dir() (string, error) {
 	return d, nil
 }
 
+// legacyGatewayPort is the port this app used before 54321 became the fixed
+// default. Configs that still carry it were never a deliberate choice, so they
+// are migrated — editors remember the gateway address, it must not drift.
+const legacyGatewayPort = 8790
+
 // Load reads config.json, returning defaults when missing or malformed.
 func Load() (Config, error) {
 	d, err := Dir()
@@ -105,6 +151,9 @@ func Load() (Config, error) {
 	var stored Config
 	if json.Unmarshal(data, &stored) != nil {
 		return cfg, nil
+	}
+	if stored.GatewayPort == legacyGatewayPort {
+		stored.GatewayPort = 0 // adopt the current default
 	}
 	cfg.Merge(stored)
 	return cfg, nil

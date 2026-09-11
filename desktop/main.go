@@ -7,14 +7,33 @@ package main
 
 import (
 	"log"
+	"path/filepath"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
+
+	"commandcode-desktop/internal/applog"
+	"commandcode-desktop/internal/settings"
 )
+
+// version is set via -ldflags "-X main.version=..." at build time.
+var version = "dev"
 
 func main() {
 	appSvc, err := NewApp()
 	if err != nil {
 		log.Fatalf("startup failed: %v", err)
+	}
+	// Daily-file logging first, so everything below (including failures) lands
+	// on disk. Never fatal: a read-only disk must not stop the app.
+	if dir, err := settings.Dir(); err == nil {
+		if err := applog.Init(filepath.Join(dir, "logs"), appSvc.cfg.LogLevel, appSvc.cfg.LogKeepDays); err != nil {
+			log.Printf("日志文件不可用（仅输出到 stderr）：%v", err)
+		} else {
+			applog.Install()
+			defer applog.Close()
+			applog.Info("app", "启动", "version", version, "logDir", applog.Path())
+		}
 	}
 	if bin, err := appSvc.PrepareProxy(); err != nil {
 		log.Printf("内置代理不可用：%v", err)
@@ -42,10 +61,18 @@ func main() {
 	})
 	appSvc.SetRuntime(app)
 
-	setupTray(app, appSvc)
+	tray := setupTray(app, appSvc)
+
+	// Start the services once the event loop is up, in order: proxy first, then
+	// the gateway (which needs a live proxy address). Failures are logged and
+	// surfaced as a notification by the tray.
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		go tray.startServices()
+	})
 
 	// Stop the proxy child process we started (external ones are left alone).
 	app.OnShutdown(func() {
+		_ = appSvc.StopGateway()
 		_ = appSvc.StopProxy()
 	})
 

@@ -17,6 +17,11 @@ includes:
   linux: ./build/linux/Taskfile.yml
 
 tasks:
+  release:single:
+    summary: Builds and copies the single-file release artifact into dist/
+    cmds:
+      - task: build
+      - go run ./tools/release -version "{{.APP_VERSION}}"
   build:
     summary: Builds the application
     cmds:

@@ -10,12 +10,14 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"commandcode-desktop/internal/applog"
 	"commandcode-desktop/internal/vault"
 )
 
@@ -39,6 +41,26 @@ type traySurface interface {
 	ShowMenu()
 }
 
+// loggingNotifier records everything the app tells the user. Every failure
+// already funnels through Fail(), so wrapping the notifier guarantees that no
+// error stage goes unlogged — even when the user dismisses the balloon.
+type loggingNotifier struct{ inner notifier }
+
+func (n loggingNotifier) Info(title, msg string) {
+	applog.Info("notify", title, "detail", msg)
+	n.inner.Info(title, msg)
+}
+
+func (n loggingNotifier) Fail(title string, err error) {
+	applog.Error("notify", err, "context", title)
+	n.inner.Fail(title, err)
+}
+
+func (n loggingNotifier) Ask(title, msg, yesLabel string, onYes func()) {
+	applog.Info("notify", "询问："+title, "detail", msg)
+	n.inner.Ask(title, msg, yesLabel, onYes)
+}
+
 type trayController struct {
 	app  *application.App
 	svc  *App
@@ -53,7 +75,7 @@ type trayController struct {
 }
 
 func setupTray(app *application.App, svc *App) *trayController {
-	t := &trayController{app: app, svc: svc, n: newNotifier(app), tooltipEvery: 5 * time.Second}
+	t := &trayController{app: app, svc: svc, n: loggingNotifier{newNotifier(app)}, tooltipEvery: 5 * time.Second}
 	tr := app.SystemTray.New()
 	tr.SetIcon(trayIcon)
 	t.tray = tr
@@ -226,6 +248,35 @@ func (t *trayController) buildMenu() *application.Menu {
 	}
 	menu.AddSeparator()
 
+	// --- gateway: what static-key editors point at ------------------------
+	gatewayLabel := "IDE 网关：已停止（点击启动）"
+	if st.GatewayRunning {
+		gatewayLabel = "IDE 网关：运行中（" + st.GatewayAddr + "）"
+	}
+	gatewayToggle := menu.AddCheckbox(gatewayLabel, st.GatewayRunning)
+	gatewayToggle.OnClick(func(*application.Context) { t.actToggleGateway() })
+	if st.GatewayRunning && st.GatewayTarget != "" {
+		gatewayToggle.SetTooltip("后端代理：" + st.GatewayTarget)
+	}
+
+	gatewayCopy := menu.Add("复制网关接入信息")
+	if st.GatewayRunning {
+		gatewayCopy.OnClick(func(*application.Context) { t.actCopyGatewayInfo() })
+	} else {
+		gatewayCopy.SetEnabled(false)
+	}
+	menu.AddSeparator()
+
+	logItem := menu.Add("打开日志目录")
+	if t.svc.LogDir() == "" {
+		logItem.SetEnabled(false)
+	} else {
+		logItem.OnClick(func(*application.Context) {
+			if err := t.svc.OpenLogDir(); err != nil {
+				t.n.Fail("打开日志目录失败", err)
+			}
+		})
+	}
 	menu.Add("打开保管库目录").OnClick(func(*application.Context) {
 		if err := t.svc.OpenVaultDir(); err != nil {
 			t.n.Fail("打开目录失败", err)
@@ -306,18 +357,78 @@ func (t *trayController) actRefreshPlans() {
 	t.refresh()
 }
 
-// actToggleProxy starts or stops the proxy this app manages.
+// actToggleProxy starts or stops the proxy this app manages and remembers the
+// choice, mirroring the gateway switch.
 func (t *trayController) actToggleProxy() {
 	if t.svc.ProxyRunning() {
 		if err := t.svc.StopProxy(); err != nil {
 			t.n.Fail("停止代理失败", err)
 			return
 		}
-	} else {
-		if err := t.svc.StartProxy(); err != nil {
-			t.n.Fail("启动代理失败", err)
-			return
-		}
+		_ = t.svc.SetProxyAuto(false)
+		t.n.Info("本地代理已停止", "IDE 网关会在需要时自动拉起它；已把网关地址填进编辑器的将连不上，直到再次启动。")
+		t.refresh()
+		return
+	}
+	addr, err := t.svc.EnsureProxyRunning()
+	if err != nil {
+		t.n.Fail("启动代理失败", err)
+		return
+	}
+	_ = t.svc.SetProxyAuto(true)
+	msg := "本地代理已启动：" + addr
+	if gw := t.svc.GatewayStatus(); gw.Running {
+		msg += "；IDE 网关正指向它"
+	}
+	t.n.Info("本地代理已启动", msg)
+	t.refresh()
+}
+
+// startServices brings the proxy up first and then the gateway, reporting the
+// outcome (used once at launch, after the event loop is ready).
+func (t *trayController) startServices() {
+	lines, err := t.svc.StartServices()
+	for _, l := range lines {
+		applog.Info("startup", l)
+	}
+	if err != nil {
+		t.n.Fail("服务启动失败", err)
+		t.refresh()
+		return
+	}
+	if len(lines) == 0 {
+		t.n.Info("服务未自动启动", "本地代理与 IDE 网关的自动启动都已关闭（可在托盘菜单里打开）。")
 	}
 	t.refresh()
+}
+
+// actToggleGateway starts or stops the credential-injecting gateway and
+// remembers the choice, so a restart behaves the way the user left it.
+func (t *trayController) actToggleGateway() {
+	if t.svc.GatewayStatus().Running {
+		if err := t.svc.StopGateway(); err != nil {
+			t.n.Fail("关闭 IDE 网关失败", err)
+			return
+		}
+		_ = t.svc.SetGatewayAuto(false)
+		t.n.Info("IDE 网关已停止", "已把网关地址填进编辑器的将连不上，直到再次启动。")
+		t.refresh()
+		return
+	}
+	if err := t.svc.StartGateway(); err != nil {
+		t.n.Fail("启动 IDE 网关失败", err)
+		return
+	}
+	_ = t.svc.SetGatewayAuto(true)
+	t.n.Info("IDE 网关已启动", t.svc.GatewayInfoText())
+	t.refresh()
+}
+
+// actCopyGatewayInfo puts the paste-ready provider settings on the clipboard.
+func (t *trayController) actCopyGatewayInfo() {
+	if !t.svc.CopyToClipboard(t.svc.GatewayInfoText()) {
+		t.n.Fail("复制失败", errors.New("剪贴板不可用"))
+		return
+	}
+	t.n.Info("已复制网关接入信息", "粘到编辑器的 provider 配置里即可，key 随便填。")
 }
